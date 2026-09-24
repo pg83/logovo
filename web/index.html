@@ -14,15 +14,18 @@
   :root { --bg: #131416; --fg: #e6e6e6; --muted: #9a9a9a; --line: #2b2d31; --accent: #7aa2ff; --mark: #5a4b00; --card: #1b1d21; }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); }
-header { display: flex; gap: 10px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); display: flex; flex-direction: column; }
+header { flex: none; display: flex; gap: 10px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
 header b { font-size: 16px; letter-spacing: .02em; }
 header form { flex: 1; display: flex; gap: 8px; }
 input[type=search] { flex: 1; padding: 7px 10px; font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
 button { font: inherit; padding: 7px 12px; border: 1px solid var(--line); background: var(--card); color: inherit; border-radius: 6px; cursor: pointer; }
-main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(0, 2fr); min-height: calc(100vh - 54px); }
-#hits { border-right: 1px solid var(--line); overflow: auto; }
-#session { overflow: auto; padding: 12px 18px; }
+/* The two panes scroll on their own: picking a hit on the left moves only
+   the transcript on the right. */
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(320px, 1fr) minmax(0, 2fr); }
+#hits { min-height: 0; border-right: 1px solid var(--line); overflow-y: auto; overscroll-behavior: contain; }
+#session { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px 18px; }
 .hit { padding: 10px 16px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .hit:hover, .hit.active { background: var(--card); }
 .hit .meta { color: var(--muted); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
@@ -37,7 +40,7 @@ mark { background: var(--mark); color: inherit; padding: 0 1px; border-radius: 2
 .turn.tool pre { color: var(--muted); }
 .head { color: var(--muted); font-size: 12px; margin-bottom: 8px; white-space: pre-wrap; }
 .empty { color: var(--muted); padding: 16px; }
-@media (max-width: 800px) { main { grid-template-columns: 1fr; } #hits { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; } }
+@media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: minmax(0, 45vh) minmax(0, 1fr); } #hits { border-right: 0; border-bottom: 1px solid var(--line); } }
 </style>
 </head>
 <body>
@@ -97,8 +100,8 @@ turns ${from}..${Math.min(to, s.turns - 1)} <a href="#" id="more-before">earlier
       docs.map(d => `<div class="turn ${d.role} ${d.n === n ? 'target' : ''}" id="t${d.n}"><div class="who">[${d.n}] ${short(d.ts)} ${d.role}</div><pre>${esc(d.body)}</pre></div>`).join('');
     $('#more-before').onclick = e => { e.preventDefault(); show(id, Math.max(12, from)); };
     $('#more-after').onclick = e => { e.preventDefault(); show(id, Math.min(s.turns - 1, to)); };
-    const t = document.getElementById('t' + n);
-    if (t) t.scrollIntoView({block: 'center'});
+    const pane = $('#session'), t = document.getElementById('t' + n);
+    if (t) pane.scrollTop = Math.max(0, t.offsetTop - pane.offsetTop - pane.clientHeight / 2 + t.offsetHeight / 2);
   } catch (e) { $('#session').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
