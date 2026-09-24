@@ -1,0 +1,8 @@
+/logovo
+/.build/
+*.test
+*.out
+__pycache__/
+*.pyc
+.claude/
+/e2e_*

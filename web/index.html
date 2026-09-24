@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>logovo</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fafafa; --fg: #1a1a1a; --muted: #6b6b6b; --line: #e2e2e2; --accent: #2456c4; --mark: #fff1a8; --card: #fff;
+  font: 14px/1.45 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #131416; --fg: #e6e6e6; --muted: #9a9a9a; --line: #2b2d31; --accent: #7aa2ff; --mark: #5a4b00; --card: #1b1d21; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); }
+header { display: flex; gap: 10px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); }
+header b { font-size: 16px; letter-spacing: .02em; }
+header form { flex: 1; display: flex; gap: 8px; }
+input[type=search] { flex: 1; padding: 7px 10px; font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
+button { font: inherit; padding: 7px 12px; border: 1px solid var(--line); background: var(--card); color: inherit; border-radius: 6px; cursor: pointer; }
+main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(0, 2fr); min-height: calc(100vh - 54px); }
+#hits { border-right: 1px solid var(--line); overflow: auto; }
+#session { overflow: auto; padding: 12px 18px; }
+.hit { padding: 10px 16px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.hit:hover, .hit.active { background: var(--card); }
+.hit .meta { color: var(--muted); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+.hit .title { font-weight: 600; margin: 2px 0; }
+.hit .snip { white-space: pre-wrap; word-break: break-word; }
+mark { background: var(--mark); color: inherit; padding: 0 1px; border-radius: 2px; }
+.turn { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.turn.target { background: var(--card); margin: 0 -18px; padding: 8px 18px; }
+.turn .who { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.turn.user .who { color: var(--accent); }
+.turn pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.turn.tool pre { color: var(--muted); }
+.head { color: var(--muted); font-size: 12px; margin-bottom: 8px; white-space: pre-wrap; }
+.empty { color: var(--muted); padding: 16px; }
+@media (max-width: 800px) { main { grid-template-columns: 1fr; } #hits { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; } }
+</style>
+</head>
+<body>
+<header>
+  <b>logovo</b>
+  <form id="f"><input id="q" type="search" placeholder="search sessions" autofocus><button>Search</button></form>
+  <span id="status" class="empty" style="padding:0"></span>
+</header>
+<main>
+  <div id="hits"><div class="empty">Type a query. FTS5 syntax works: <code>unzstd OR tar</code>, <code>"kernel build"</code>, <code>hostname*</code>.</div></div>
+  <div id="session"><div class="empty">Pick a hit to read the session around it.</div></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const short = ts => ts ? ts.slice(0, 16).replace('T', ' ') : '';
+const base = p => p ? p.split('/').filter(Boolean).slice(-1)[0] : '';
+let current = null;
+
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function search(q) {
+  history.replaceState(null, '', '?q=' + encodeURIComponent(q));
+  $('#hits').innerHTML = '<div class="empty">Searching…</div>';
+  try {
+    const {hits} = await api('/v1/search?format=json&limit=50&q=' + encodeURIComponent(q));
+    if (!hits.length) { $('#hits').innerHTML = '<div class="empty">Nothing found.</div>'; return; }
+    $('#hits').innerHTML = hits.map((h, i) => `
+      <div class="hit" data-i="${i}">
+        <div class="meta"><span>${h.agent}</span><span>${esc(h.host)}</span><span>${short(h.ts)}</span><span>${esc(base(h.cwd))}</span><span>#${h.n}</span></div>
+        <div class="title">${esc(h.title)}</div>
+        <div class="snip">${esc(h.role)}: ${esc(h.snippet).replace(/\[([^\]]*)\]/g, '<mark>$1</mark>')}</div>
+      </div>`).join('');
+    document.querySelectorAll('.hit').forEach(el => el.onclick = () => {
+      document.querySelectorAll('.hit.active').forEach(x => x.classList.remove('active'));
+      el.classList.add('active');
+      const h = hits[el.dataset.i];
+      show(h.session, h.n);
+    });
+  } catch (e) { $('#hits').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+async function show(id, n) {
+  const from = Math.max(0, n - 12), to = n + 12;
+  if (current !== id) $('#session').innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const {session: s, docs} = await api(`/v1/sessions/${id}?format=json&from=${from}&to=${to}`);
+    current = id;
+    $('#session').innerHTML = `
+      <div class="head">${s.session} · ${s.agent} · ${esc(s.user)}@${esc(s.host)} · ${esc(s.cwd)}
+${short(s.first_ts)} .. ${short(s.last_ts)} · ${s.turns} turns · ${esc(s.title)}
+turns ${from}..${Math.min(to, s.turns - 1)} <a href="#" id="more-before">earlier</a> · <a href="#" id="more-after">later</a></div>` +
+      docs.map(d => `<div class="turn ${d.role} ${d.n === n ? 'target' : ''}" id="t${d.n}"><div class="who">[${d.n}] ${short(d.ts)} ${d.role}</div><pre>${esc(d.body)}</pre></div>`).join('');
+    $('#more-before').onclick = e => { e.preventDefault(); show(id, Math.max(12, from)); };
+    $('#more-after').onclick = e => { e.preventDefault(); show(id, Math.min(s.turns - 1, to)); };
+    const t = document.getElementById('t' + n);
+    if (t) t.scrollIntoView({block: 'center'});
+  } catch (e) { $('#session').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+$('#f').onsubmit = e => { e.preventDefault(); const q = $('#q').value.trim(); if (q) search(q); };
+api('/v1/status').then(m => { $('#status').textContent = `${m.sessions} sessions, ${m.docs} turns, built ${short(m.built_at)}`; }).catch(() => {});
+const q0 = new URLSearchParams(location.search).get('q');
+if (q0) { $('#q').value = q0; search(q0); }
+</script>
+</body>
+</html>
