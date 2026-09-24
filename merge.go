@@ -22,13 +22,15 @@ func mergeMain(args []string) {
 	merge(openStore(*storeSpec))
 }
 
-// merge appends every queued portion to its session, in the order the
-// keys list, and drops it from the queue. A crash between the append
-// and the delete repeats one portion; the indexer drops duplicates by
-// their md5, so this needs no bookkeeping of its own.
+// merge appends the queued portions to their sessions, all of a
+// session's portions in one append in the order the keys list, and
+// drops them from the queue. A crash between the append and the delete
+// repeats portions; the indexer drops duplicates by their md5, so this
+// needs no bookkeeping of its own.
 func merge(store objectStore) {
 	keys := store.list("queue/")
-	merged := 0
+	var order []string
+	bySession := map[string][]string{}
 
 	for _, key := range keys {
 		name := strings.TrimPrefix(key, "queue/")
@@ -40,10 +42,30 @@ func merge(store objectStore) {
 			continue
 		}
 
-		store.appendTo(sessionKey(session), store.get(key))
-		store.del(key)
-		merged++
+		if _, seen := bySession[session]; !seen {
+			order = append(order, session)
+		}
+
+		bySession[session] = append(bySession[session], key)
 	}
 
-	slog.Info("merge: done", "portions", merged)
+	merged := 0
+
+	for _, session := range order {
+		var frames []byte
+
+		for _, key := range bySession[session] {
+			frames = append(frames, store.get(key)...)
+		}
+
+		store.appendTo(sessionKey(session), frames)
+
+		for _, key := range bySession[session] {
+			store.del(key)
+		}
+
+		merged += len(bySession[session])
+	}
+
+	slog.Info("merge: done", "portions", merged, "sessions", len(order))
 }
