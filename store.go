@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -142,6 +143,15 @@ type s3Store struct {
 	cli    *s3.Client
 }
 
+// Every call gets a deadline: a store that stops answering (drives
+// stalling under MinIO, a lost node) must fail the job, not hang it
+// forever holding its lock.
+const s3CallTimeout = 10 * time.Minute
+
+func s3ctx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), s3CallTimeout)
+}
+
 func newS3Store(bucket string) *s3Store {
 	key := os.Getenv("AWS_ACCESS_KEY_ID")
 	secret := os.Getenv("AWS_SECRET_ACCESS_KEY")
@@ -197,7 +207,10 @@ func isS3NotFound(err error) bool {
 }
 
 func (s *s3Store) put(key string, data []byte) {
-	throw2(s.cli.PutObject(context.Background(), &s3.PutObjectInput{
+	ctx, cancel := s3ctx()
+	defer cancel()
+
+	throw2(s.cli.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 		Body:   bytes.NewReader(data),
@@ -205,7 +218,10 @@ func (s *s3Store) put(key string, data []byte) {
 }
 
 func (s *s3Store) get(key string) []byte {
-	resp, err := s.cli.GetObject(context.Background(), &s3.GetObjectInput{
+	ctx, cancel := s3ctx()
+	defer cancel()
+
+	resp, err := s.cli.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
@@ -221,11 +237,14 @@ func (s *s3Store) get(key string) []byte {
 }
 
 func (s *s3Store) list(prefix string) []string {
+	ctx, cancel := s3ctx()
+	defer cancel()
+
 	var keys []string
 	var token *string
 
 	for {
-		page := throw2(s.cli.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+		page := throw2(s.cli.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket:            aws.String(s.bucket),
 			Prefix:            aws.String(prefix),
 			ContinuationToken: token,
@@ -248,7 +267,10 @@ func (s *s3Store) list(prefix string) []string {
 }
 
 func (s *s3Store) del(key string) {
-	throw2(s.cli.DeleteObject(context.Background(), &s3.DeleteObjectInput{
+	ctx, cancel := s3ctx()
+	defer cancel()
+
+	throw2(s.cli.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	}))
@@ -271,7 +293,10 @@ func (s *s3Store) appendTo(key string, data []byte) {
 }
 
 func (s *s3Store) stat(key string) (string, bool) {
-	resp, err := s.cli.HeadObject(context.Background(), &s3.HeadObjectInput{
+	ctx, cancel := s3ctx()
+	defer cancel()
+
+	resp, err := s.cli.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
