@@ -15,11 +15,12 @@ Client:
   show [-api URL] session [-from N] [-to N]     print a session transcript
 
 Lab:
-  collect -listen ADDR -store STORE       accept portions, write them to queue/
+  collect [-listen ADDR] -store STORE     accept portions, write them to queue/
   merge -store STORE                      append queue/ portions to sessions/
   index -store STORE [-out FILE]          rebuild index/ from every session
-  serve -listen ADDR -store STORE         search API over the latest index
-  web -listen ADDR -api URL               search UI, proxies /v1/ to the API
+  serve [-listen ADDR] -store STORE       search API over the latest index
+  web [-listen ADDR] [-api URL] [-collect URL]
+        the page; proxies /v1/portions to collect and the rest of /v1/ to serve
 
 STORE is dir:/path or s3://bucket (S3_ENDPOINT, AWS_ACCESS_KEY_ID,
 AWS_SECRET_ACCESS_KEY, AWS_REGION from the environment).

@@ -127,6 +127,19 @@ def test():
             out = lib.run("show", "-api", api, claude_id, "-from", "0", "-to", "1").stdout
             assert "[0]" in out and "[2]" not in out, out
 
+            # One name for everything: the page, the API and uploads go through web.
+            with lab.web(serve) as web:
+                status, page = web.get("/")
+                assert status == 200 and "<title>logovo</title>" in page, page[:200]
+                assert lib.search(web, "lexer"), "search through web"
+                out = lib.run("show", "-api", f"http://127.0.0.1:{web.port}", codex_id).stdout
+                assert "lexer rewritten" in out, out
+                (lab.claude / "-home-me-proj" / f"{claude_id}.jsonl.latest").write_text("0\n")
+                result = lib.run("scan", "-once", "-url", f"http://127.0.0.1:{web.port}/v1/portions", "-host", "e2e",
+                                 "-root", f"claude={lab.claude}", "-root", f"codex={lab.codex}")
+                assert result.stderr.count("scan: shipped") == 1, result.stderr
+                assert len(lab.keys("queue")) == 1, lab.keys("queue")
+
 
 if __name__ == "__main__":
     test()

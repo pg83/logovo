@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	defaultCollectURL = "http://logovo.lab.mesh:8070/v1/portions"
+	defaultCollectURL = "https://logovo.lab.mesh/v1/portions"
 	maxPortionBytes   = 4 << 20
 )
 

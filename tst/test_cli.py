@@ -11,7 +11,7 @@ def test():
 
     bad(expected="Usage:")
     bad("unknown", expected="Usage:")
-    bad("collect", expected="-listen and -store")
+    bad("collect", expected="-store is required")
     bad("collect", "-listen", "127.0.0.1:1", "-store", "ftp://x", expected="dir:/path or s3://bucket")
     bad("merge", expected="-store is required")
     bad("index", expected="-store is required")

@@ -105,6 +105,11 @@ class Lab:
         port = free_port()
         return Daemon("serve", "-listen", f"127.0.0.1:{port}", "-store", f"dir:{self.store}", "-refresh", "1s", port=port)
 
+    def web(self, serve):
+        port = free_port()
+        return Daemon("web", "-listen", f"127.0.0.1:{port}", "-api", f"http://127.0.0.1:{serve.port}",
+                      "-collect", f"http://127.0.0.1:{self.port}", port=port, path="/")
+
     def keys(self, prefix):
         root = self.store / prefix
         if not root.exists():

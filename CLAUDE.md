@@ -15,16 +15,17 @@ lab, merged per session, indexed, searchable by people and by agents.
 ## Pipeline
 
 ```
-scan (every host)        POST /v1/portions       collect (lab, mesh address)
-  ~/.claude/projects/*/<uuid>.jsonl      ---->     queue/<uuid>.<md5>
-  ~/.codex/sessions/*/*/*/rollout-*-<uuid>.jsonl
-  <file>.latest = bytes already shipped
-
+scan (every host)     POST https://logovo.lab.mesh/v1/portions
+  ~/.claude/projects/*/<uuid>.jsonl                 |  lab_proxy routes the name
+  ~/.codex/sessions/*/*/*/rollout-*-<uuid>.jsonl    |  to web on loopback
+  <file>.latest = bytes already shipped             v
+web (every lab host)      /            the page
+                          /v1/portions -> collect   queue/<uuid>.<md5>
+                          /v1/*        -> serve
 merge (job, every minute)      queue/* appended to sessions/<uuid>, queue emptied
 index (job, every N minutes)   sessions/* -> normalize -> index/logovo.sqlite.zst
 serve (every lab host)         fetches the index when it changes; /v1/search, /v1/sessions/<uuid>
-web (every lab host)           the page; proxies /v1/ to serve
-search, show (CLI)             thin clients of serve, default https://logovo.lab.mesh
+search, show (CLI)             thin clients, default https://logovo.lab.mesh
 ```
 
 - A portion is one JSON line (`Portion` in `portion.go`) in one zstd frame.

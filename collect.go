@@ -13,12 +13,12 @@ const maxUploadBytes = 16 << 20
 
 func collectMain(args []string) {
 	fs := flag.NewFlagSet("collect", flag.ExitOnError)
-	listen := fs.String("listen", "", "address to listen on (a mesh address of this host)")
+	listen := fs.String("listen", "127.0.0.1:8070", "address to listen on")
 	storeSpec := fs.String("store", "", "dir:/path or s3://bucket")
 	throw(fs.Parse(args))
 
-	if *listen == "" || *storeSpec == "" {
-		throwFmt("collect: -listen and -store are required")
+	if *storeSpec == "" {
+		throwFmt("collect: -store is required")
 	}
 
 	c := &collector{store: openStore(*storeSpec)}
