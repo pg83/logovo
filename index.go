@@ -56,7 +56,9 @@ func indexMain(args []string) {
 // buildIndex reads every session, normalizes it and writes one fresh
 // database; the previous index is replaced whole, nothing incremental.
 func buildIndex(store objectStore, keep string) {
-	dir := throw2(os.MkdirTemp("", "logovo-index-"))
+	// Built next to the working directory, not in TMPDIR: as a gorn task
+	// the job may only write where it runs.
+	dir := throw2(os.MkdirTemp(".", "logovo-index-"))
 	defer os.RemoveAll(dir)
 
 	path := filepath.Join(dir, "logovo.sqlite")
