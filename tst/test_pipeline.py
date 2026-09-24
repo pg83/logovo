@@ -54,10 +54,17 @@ def test():
         assert lab.scan().stderr.count("scan: shipped") == 1
         assert len(lab.keys("queue")) == 3
 
+        # A legacy sessions/ object (a zstd frame of portions) is folded in
+        # like the queue; its portions duplicate queued ones and must not
+        # show up twice.
+        legacy = lab.store / "sessions" / claude_id
+        legacy.parent.mkdir()
+        legacy.write_bytes((lab.store / lab.keys("queue")[0]).read_bytes())
+
         lab.merge()
-        assert lab.keys("queue") == []
-        sessions = lab.keys("sessions")
-        assert sessions == sorted([f"sessions/{claude_id}", f"sessions/{codex_id}"]), sessions
+        assert lab.keys("queue") == [] and lab.keys("sessions") == []
+        pile = lab.keys("pile")
+        assert len(pile) == 1 and pile[0].startswith("pile/00-"), pile
 
         lab.index()
         assert lab.keys("index") == ["index/logovo.sqlite.zst"]
@@ -115,6 +122,8 @@ def test():
             ]))
             lab.scan()
             lab.merge()
+            # The new fold shares the size class with the first: compacted into one.
+            assert len(lab.keys("pile")) == 1, lab.keys("pile")
             lab.index()
             deadline = time.time() + 10
             while time.time() < deadline and serve.json("/v1/status")["docs"] == docs_before:

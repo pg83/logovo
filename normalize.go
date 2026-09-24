@@ -78,10 +78,27 @@ func normalize(session string, lines [][]byte) *normalized {
 		return portions[i].Offset < portions[j].Offset
 	})
 
+	// Portions are byte ranges of the session file (offset, then one
+	// newline-terminated record after another). A file shipped again from
+	// scratch, or a retried chunk, covers bytes already seen: keep each
+	// byte range once, in file order.
 	var records []string
+	var covered int64
 
 	for _, p := range portions {
-		records = append(records, p.Records...)
+		pos := p.Offset
+
+		for _, r := range p.Records {
+			if pos >= covered {
+				records = append(records, r)
+			}
+
+			pos += int64(len(r)) + 1
+		}
+
+		if pos > covered {
+			covered = pos
+		}
 	}
 
 	n := &normalized{info: sessionInfo{

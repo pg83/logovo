@@ -22,16 +22,18 @@ scan (every host)     POST https://logovo.lab.mesh/v1/portions
 web (every lab host)      /            the page
                           /v1/portions -> collect   queue/<uuid>.<md5>
                           /v1/*        -> serve
-merge (job, every minute)      queue/* appended to sessions/<uuid>, queue emptied
-index (job, every N minutes)   sessions/* -> normalize -> index/logovo.sqlite.zst
+merge (job, every minute)      queue/* repacked into one pile/<level>-<seq>, then pairs of
+                               same-size pile files repacked into the next size class
+index (job, every N minutes)   pile/* -> group lines by session -> normalize -> index/logovo.sqlite.zst
 serve (every lab host)         fetches the index when it changes; /v1/search, /v1/sessions/<uuid>
 search, show (CLI)             thin clients, default https://logovo.lab.mesh
 ```
 
 - A portion is one JSON line (`Portion` in `portion.go`) in one zstd frame.
-  A session object is those frames concatenated; nothing on the lab side
-  looks inside until the indexer does. The indexer drops duplicate
-  portions by md5 and orders them by offset, so merge needs no state.
+  The pile is the same lines, many sessions mixed, repacked into single
+  zstd streams whose sizes climb by powers of two (`merge.go`). merge is
+  not idempotent on purpose: a crash leaves duplicate portions, and the
+  indexer drops duplicates by md5 and orders by offset.
 - The store is `dir:/path` or `s3://bucket` (`store.go`); tests use `dir:`.
 - The index is SQLite with FTS5 through `modernc.org/sqlite` (pure Go, no
   cgo). One document per message: user text, assistant text, tool calls

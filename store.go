@@ -24,12 +24,16 @@ import (
 type objectStore interface {
 	put(key string, data []byte)
 	get(key string) []byte
-	list(prefix string) []string
+	list(prefix string) []object
 	del(key string)
-	appendTo(key string, data []byte)
 	// stat returns a value that changes whenever the object changes and
 	// whether the object exists at all.
 	stat(key string) (string, bool)
+}
+
+type object struct {
+	key  string
+	size int64
 }
 
 var errNotFound = errors.New("not found")
@@ -85,8 +89,8 @@ func (d *dirStore) get(key string) []byte {
 	return data
 }
 
-func (d *dirStore) list(prefix string) []string {
-	var keys []string
+func (d *dirStore) list(prefix string) []object {
+	var objects []object
 
 	err := filepath.WalkDir(d.root, func(p string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() || strings.HasSuffix(p, ".tmp") {
@@ -96,16 +100,17 @@ func (d *dirStore) list(prefix string) []string {
 		key := filepath.ToSlash(throw2(filepath.Rel(d.root, p)))
 
 		if strings.HasPrefix(key, prefix) {
-			keys = append(keys, key)
+			info := throw2(entry.Info())
+			objects = append(objects, object{key: key, size: info.Size()})
 		}
 
 		return nil
 	})
 
 	throw(err)
-	sort.Strings(keys)
+	sort.Slice(objects, func(i, j int) bool { return objects[i].key < objects[j].key })
 
-	return keys
+	return objects
 }
 
 func (d *dirStore) del(key string) {
@@ -114,16 +119,6 @@ func (d *dirStore) del(key string) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		throw(err)
 	}
-}
-
-func (d *dirStore) appendTo(key string, data []byte) {
-	p := d.path(key)
-	throw(os.MkdirAll(filepath.Dir(p), 0755))
-	f := throw2(os.OpenFile(p, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644))
-	_, werr := f.Write(data)
-	cerr := f.Close()
-	throw(werr)
-	throw(cerr)
 }
 
 func (d *dirStore) stat(key string) (string, bool) {
@@ -236,11 +231,11 @@ func (s *s3Store) get(key string) []byte {
 	return throw2(io.ReadAll(resp.Body))
 }
 
-func (s *s3Store) list(prefix string) []string {
+func (s *s3Store) list(prefix string) []object {
 	ctx, cancel := s3ctx()
 	defer cancel()
 
-	var keys []string
+	var objects []object
 	var token *string
 
 	for {
@@ -251,7 +246,7 @@ func (s *s3Store) list(prefix string) []string {
 		}))
 
 		for _, obj := range page.Contents {
-			keys = append(keys, aws.ToString(obj.Key))
+			objects = append(objects, object{key: aws.ToString(obj.Key), size: aws.ToInt64(obj.Size)})
 		}
 
 		if !aws.ToBool(page.IsTruncated) {
@@ -261,9 +256,9 @@ func (s *s3Store) list(prefix string) []string {
 		token = page.NextContinuationToken
 	}
 
-	sort.Strings(keys)
+	sort.Slice(objects, func(i, j int) bool { return objects[i].key < objects[j].key })
 
-	return keys
+	return objects
 }
 
 func (s *s3Store) del(key string) {
@@ -274,22 +269,6 @@ func (s *s3Store) del(key string) {
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	}))
-}
-
-// appendTo is read, concatenate, write: S3 has no append. Sessions are
-// small enough for that today; a multipart copy is the upgrade path.
-func (s *s3Store) appendTo(key string, data []byte) {
-	var old []byte
-
-	exc := try(func() {
-		old = s.get(key)
-	})
-
-	if exc != nil && !errors.Is(exc.asError(), errNotFound) {
-		exc.throw()
-	}
-
-	s.put(key, append(old, data...))
 }
 
 func (s *s3Store) stat(key string) (string, bool) {

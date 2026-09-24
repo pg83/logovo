@@ -108,3 +108,17 @@ func parsePortion(line []byte) *Portion {
 
 	return &p
 }
+
+// portionSession peeks at the session id without validating the rest;
+// a line that is not a portion at all yields "".
+func portionSession(line []byte) string {
+	var p struct {
+		Session string `json:"session"`
+	}
+
+	if json.Unmarshal(line, &p) != nil || !uuidRe.MatchString(p.Session) {
+		return ""
+	}
+
+	return p.Session
+}

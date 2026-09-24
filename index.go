@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -73,15 +72,30 @@ func buildIndex(store objectStore, keep string) {
 	sessions, docs := 0, 0
 	started := time.Now()
 
-	for _, key := range store.list("sessions/") {
-		session := strings.TrimPrefix(key, "sessions/")
+	// Every pile file (and any sessions/ object not yet folded in) holds
+	// portions of many sessions; gather them by session first.
+	bySession := map[string][][]byte{}
+	var order []string
 
-		if !uuidRe.MatchString(session) {
-			continue
+	for _, o := range append(store.list("pile/"), store.list("sessions/")...) {
+		for _, line := range decodeFrames(store.get(o.key)) {
+			session := portionSession(line)
+
+			if session == "" {
+				continue
+			}
+
+			if _, seen := bySession[session]; !seen {
+				order = append(order, session)
+			}
+
+			bySession[session] = append(bySession[session], line)
 		}
+	}
 
+	for _, session := range order {
 		exc := try(func() {
-			n := normalize(session, decodeFrames(store.get(key)))
+			n := normalize(session, bySession[session])
 
 			if n == nil {
 				return
