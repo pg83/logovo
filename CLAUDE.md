@@ -25,7 +25,8 @@ web (every lab host)      /            the page
 merge (job, every minute)      queue/* repacked into one pile/<level>-<seq>, then pairs of
                                same-size pile files repacked into the next size class
 index (job, every N minutes)   pile/* -> group lines by session -> normalize -> index/logovo.sqlite.zst
-serve (every lab host)         fetches the index when it changes; /v1/search, /v1/sessions/<uuid>
+serve (every lab host)         fetches the index when it changes; /v1/search, /v1/sessions/<uuid>,
+                               and MCP (tools search, show) at POST /v1/mcp
 search, show (CLI)             thin clients, default https://logovo.lab.mesh
 ```
 
