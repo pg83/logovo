@@ -28,7 +28,8 @@ CREATE TABLE sessions (
     first_ts TEXT NOT NULL,
     last_ts TEXT NOT NULL,
     turns INTEGER NOT NULL,
-    bytes INTEGER NOT NULL
+    bytes INTEGER NOT NULL,
+    first_rowid INTEGER NOT NULL
 );
 CREATE VIRTUAL TABLE docs USING fts5(
     body,
@@ -68,10 +69,15 @@ func buildIndex(store objectStore, keep string) {
 	throw2(db.Exec(schema))
 
 	tx := throw2(db.Begin())
-	insSession := throw2(tx.Prepare("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)"))
-	insDoc := throw2(tx.Prepare("INSERT INTO docs (body, session, n, role, ts) VALUES (?,?,?,?,?)"))
+	insSession := throw2(tx.Prepare("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?)"))
+	insDoc := throw2(tx.Prepare("INSERT INTO docs (rowid, body, session, n, role, ts) VALUES (?,?,?,?,?,?)"))
 	sessions, docs := 0, 0
 	started := time.Now()
+
+	// The docs of a session get consecutive rowids in order of n, starting
+	// at its first_rowid, so serve reads a session as one rowid range
+	// instead of scanning the whole docs table.
+	rowid := int64(1)
 
 	// Every pile file holds portions of many sessions, sorted by session;
 	// read all of them at once, one whole session at a time. Files from
@@ -93,10 +99,11 @@ func buildIndex(store objectStore, keep string) {
 			}
 
 			i := n.info
-			throw2(insSession.Exec(i.Session, i.Agent, i.Host, i.User, i.Cwd, i.Title, i.FirstTS, i.LastTS, i.Turns, i.Bytes))
+			throw2(insSession.Exec(i.Session, i.Agent, i.Host, i.User, i.Cwd, i.Title, i.FirstTS, i.LastTS, i.Turns, i.Bytes, rowid))
 
 			for _, d := range n.docs {
-				throw2(insDoc.Exec(d.Body, i.Session, d.N, d.Role, d.TS))
+				throw2(insDoc.Exec(rowid, d.Body, i.Session, d.N, d.Role, d.TS))
+				rowid++
 			}
 
 			sessions++
