@@ -104,16 +104,29 @@ func (s *server) refresh() {
 
 	path := filepath.Join(s.dir, "index-"+strconv.FormatInt(time.Now().UnixNano(), 36)+".sqlite")
 	f := throw2(os.Create(path))
-	_, cerr := io.Copy(f, dec)
-	throw(f.Close())
-	throw(cerr)
-	s.open(path, version)
+
+	// A failed refresh leaves nothing behind; the loaded index stays.
+	try(func() {
+		_, cerr := io.Copy(f, dec)
+		throw(f.Close())
+		throw(cerr)
+		s.open(path, version)
+	}).catch(func(exc *Exception) {
+		os.Remove(path)
+		exc.throw()
+	})
 }
 
 func (s *server) open(path, version string) {
 	db := throw2(sql.Open("sqlite", "file:"+path+"?mode=ro&immutable=1"))
 	var docs string
-	throw(db.QueryRow("SELECT value FROM meta WHERE key = 'docs'").Scan(&docs))
+
+	try(func() {
+		throw(db.QueryRow("SELECT value FROM meta WHERE key = 'docs'").Scan(&docs))
+	}).catch(func(exc *Exception) {
+		db.Close()
+		exc.throw()
+	})
 
 	s.mu.Lock()
 	old, oldPath := s.db, s.path
