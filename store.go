@@ -24,6 +24,10 @@ import (
 type objectStore interface {
 	put(key string, data []byte)
 	get(key string) []byte
+	// open and putFile are get and put for objects too big to hold in
+	// memory.
+	open(key string) io.ReadCloser
+	putFile(key, path string)
 	list(prefix string) []object
 	del(key string)
 	// stat returns a value that changes whenever the object changes and
@@ -87,6 +91,26 @@ func (d *dirStore) get(key string) []byte {
 	throw(err)
 
 	return data
+}
+
+func (d *dirStore) open(key string) io.ReadCloser {
+	f, err := os.Open(d.path(key))
+
+	if errors.Is(err, fs.ErrNotExist) {
+		throw(errNotFound)
+	}
+
+	throw(err)
+
+	return f
+}
+
+func (d *dirStore) putFile(key, path string) {
+	p := d.path(key)
+	throw(os.MkdirAll(filepath.Dir(p), 0755))
+	tmp := p + ".tmp"
+	copyFile(path, tmp)
+	throw(os.Rename(tmp, p))
 }
 
 func (d *dirStore) list(prefix string) []object {
@@ -229,6 +253,82 @@ func (s *s3Store) get(key string) []byte {
 	defer resp.Body.Close()
 
 	return throw2(io.ReadAll(resp.Body))
+}
+
+// s3Body bounds every read, not the life of the body: a streaming reader
+// may legitimately hold it for the whole job (index keeps all pile files
+// open), yet a store that stops answering must still fail the job, so
+// each read gets s3CallTimeout of its own.
+type s3Body struct {
+	io.ReadCloser
+	cancel context.CancelCauseFunc
+}
+
+// s3Timeout cancels with DeadlineExceeded, so a stalled store reads as a
+// timeout in the job's log rather than as somebody's cancellation.
+func s3Timeout(cancel context.CancelCauseFunc) *time.Timer {
+	return time.AfterFunc(s3CallTimeout, func() { cancel(context.DeadlineExceeded) })
+}
+
+func (b *s3Body) read(p []byte) (int, error) {
+	t := s3Timeout(b.cancel)
+	defer t.Stop()
+
+	return b.ReadCloser.Read(p)
+}
+
+func (b *s3Body) Read(p []byte) (int, error) {
+	return b.read(p)
+}
+
+func (b *s3Body) close() error {
+	defer b.cancel(nil)
+
+	return b.ReadCloser.Close()
+}
+
+func (b *s3Body) Close() error {
+	return b.close()
+}
+
+func (s *s3Store) open(key string) io.ReadCloser {
+	// The request itself gets the usual deadline; the body is then
+	// bounded read by read (s3Body).
+	ctx, cancel := context.WithCancelCause(context.Background())
+	t := s3Timeout(cancel)
+
+	resp, err := s.cli.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+
+	t.Stop()
+
+	if err != nil {
+		cancel(nil)
+	}
+
+	if isS3NotFound(err) {
+		throw(errNotFound)
+	}
+
+	throw(err)
+
+	return &s3Body{ReadCloser: resp.Body, cancel: cancel}
+}
+
+func (s *s3Store) putFile(key, path string) {
+	f := throw2(os.Open(path))
+	defer f.Close()
+
+	ctx, cancel := s3ctx()
+	defer cancel()
+
+	throw2(s.cli.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+		Body:   f,
+	}))
 }
 
 func (s *s3Store) list(prefix string) []object {

@@ -1,12 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"database/sql"
 	"flag"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -72,30 +73,20 @@ func buildIndex(store objectStore, keep string) {
 	sessions, docs := 0, 0
 	started := time.Now()
 
-	// Every pile file (and any sessions/ object not yet folded in) holds
-	// portions of many sessions; gather them by session first.
-	bySession := map[string][][]byte{}
-	var order []string
+	// Every pile file holds portions of many sessions, sorted by session;
+	// read all of them at once, one whole session at a time. Files from
+	// before the pile was sorted are left to merge to sort out.
+	var keys []string
 
-	for _, o := range append(store.list("pile/"), store.list("sessions/")...) {
-		for _, line := range decodeFrames(store.get(o.key)) {
-			session := portionSession(line)
-
-			if session == "" {
-				continue
-			}
-
-			if _, seen := bySession[session]; !seen {
-				order = append(order, session)
-			}
-
-			bySession[session] = append(bySession[session], line)
+	for _, o := range store.list("pile/") {
+		if strings.HasSuffix(o.key, pileSorted) {
+			keys = append(keys, o.key)
 		}
 	}
 
-	for _, session := range order {
+	eachSession(store, keys, func(session string, lines [][]byte) {
 		exc := try(func() {
-			n := normalize(session, bySession[session])
+			n := normalize(session, lines)
 
 			if n == nil {
 				return
@@ -115,7 +106,7 @@ func buildIndex(store objectStore, keep string) {
 		if exc != nil {
 			slog.Warn("index: skipping session", "session", session, "err", exc.Error())
 		}
-	}
+	})
 
 	for k, v := range map[string]string{
 		"built_at": nowRFC3339(),
@@ -129,17 +120,25 @@ func buildIndex(store objectStore, keep string) {
 	throw2(db.Exec("INSERT INTO docs(docs) VALUES ('optimize')"))
 	throw(db.Close())
 
-	raw := throw2(os.ReadFile(path))
-
 	if keep != "" {
-		throw(os.WriteFile(keep, raw, 0644))
+		copyFile(path, keep)
 	}
 
-	var buf bytes.Buffer
-	enc := throw2(zstd.NewWriter(&buf))
-	throw2(enc.Write(raw))
-	throw(enc.Close())
-	store.put(indexKey, buf.Bytes())
+	zst := path + ".zst"
+	compressFile(path, zst)
+	store.putFile(indexKey, zst)
 
-	slog.Info("index: published", "sessions", sessions, "docs", docs, "bytes", len(raw), "compressed", buf.Len(), "took", time.Since(started).Round(time.Millisecond))
+	slog.Info("index: published", "sessions", sessions, "docs", docs, "bytes", fileSize(path), "compressed", fileSize(zst), "took", time.Since(started).Round(time.Millisecond))
+}
+
+func compressFile(src, dst string) {
+	in := throw2(os.Open(src))
+	defer in.Close()
+
+	out := throw2(os.Create(dst))
+	enc := throw2(zstd.NewWriter(out))
+	_, cerr := io.Copy(enc, in)
+	throw(enc.Close())
+	throw(out.Close())
+	throw(cerr)
 }
