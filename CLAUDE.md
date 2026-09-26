@@ -24,7 +24,8 @@ web (every lab host)      /            the page
                           /v1/*        -> serve
 merge (job, every minute)      queue/* (already in session order) repacked into one
                                pile/<level>-<seq>.sorted, then pairs of same-size pile
-                               files merged by session into the next size class
+                               files merged by session into the next size class;
+                               a queue object that does not decode is moved to bad/
 index (job, every N minutes)   pile/*.sorted merged by session, one session at a time
                                -> normalize -> index/logovo.sqlite.zst
 serve (every lab host)         fetches the index when it changes; /v1/search, /v1/sessions/<uuid>

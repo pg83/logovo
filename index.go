@@ -72,6 +72,7 @@ func buildIndex(store objectStore, keep string) {
 	insSession := throw2(tx.Prepare("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?)"))
 	insDoc := throw2(tx.Prepare("INSERT INTO docs (rowid, body, session, n, role, ts) VALUES (?,?,?,?,?,?)"))
 	sessions, docs := 0, 0
+	lastTS := ""
 	started := time.Now()
 
 	// The docs of a session get consecutive rowids in order of n, starting
@@ -90,7 +91,9 @@ func buildIndex(store objectStore, keep string) {
 		}
 	}
 
-	eachSession(store, keys, func(session string, lines [][]byte) {
+	// A pile file that breaks off costs only what follows the break: the
+	// index is rebuilt from scratch every run.
+	eachSession(store, keys, false, func(session string, lines [][]byte) {
 		exc := try(func() {
 			n := normalize(session, lines)
 
@@ -108,6 +111,10 @@ func buildIndex(store objectStore, keep string) {
 
 			sessions++
 			docs += len(n.docs)
+
+			if i.LastTS > lastTS {
+				lastTS = i.LastTS
+			}
 		})
 
 		if exc != nil {
@@ -117,6 +124,7 @@ func buildIndex(store objectStore, keep string) {
 
 	for k, v := range map[string]string{
 		"built_at": nowRFC3339(),
+		"last_ts":  lastTS,
 		"sessions": itoa(int64(sessions)),
 		"docs":     itoa(int64(docs)),
 	} {
