@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -8,6 +10,20 @@ import (
 
 func itoa(n int64) string {
 	return strconv.FormatInt(n, 10)
+}
+
+func copyFile(src, dst string) {
+	in := throw2(os.Open(src))
+	defer in.Close()
+
+	out := throw2(os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644))
+	_, cerr := io.Copy(out, in)
+	throw(out.Close())
+	throw(cerr)
+}
+
+func fileSize(path string) int64 {
+	return throw2(os.Stat(path)).Size()
 }
 
 func nowRFC3339() string {

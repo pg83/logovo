@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/md5"
 	"encoding/hex"
@@ -99,6 +100,47 @@ func decodeFrames(data []byte) [][]byte {
 	}
 
 	return lines
+}
+
+// lineReader pulls the lines of a stored stream of zstd frames one at a
+// time: the lines decodeFrames returns, without holding them all.
+// Its errors name the object, so a broken one can be found.
+type lineReader struct {
+	key  string
+	body io.ReadCloser
+	dec  *zstd.Decoder
+	br   *bufio.Reader
+}
+
+func openLines(store objectStore, key string) *lineReader {
+	body := store.open(key)
+	dec, err := zstd.NewReader(body)
+
+	if err != nil {
+		throwFmt("%s: %v", key, err)
+	}
+
+	return &lineReader{key: key, body: body, dec: dec, br: bufio.NewReader(dec)}
+}
+
+// next returns the next line, nil at the end.
+func (r *lineReader) next() []byte {
+	line, err := r.br.ReadBytes('\n')
+
+	if err != nil && err != io.EOF {
+		throwFmt("%s: %v", r.key, err)
+	}
+
+	if len(line) == 0 {
+		return nil
+	}
+
+	return line
+}
+
+func (r *lineReader) close() {
+	r.dec.Close()
+	r.body.Close()
 }
 
 func parsePortion(line []byte) *Portion {

@@ -1,12 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"database/sql"
 	"flag"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -27,7 +28,8 @@ CREATE TABLE sessions (
     first_ts TEXT NOT NULL,
     last_ts TEXT NOT NULL,
     turns INTEGER NOT NULL,
-    bytes INTEGER NOT NULL
+    bytes INTEGER NOT NULL,
+    first_rowid INTEGER NOT NULL
 );
 CREATE VIRTUAL TABLE docs USING fts5(
     body,
@@ -67,58 +69,62 @@ func buildIndex(store objectStore, keep string) {
 	throw2(db.Exec(schema))
 
 	tx := throw2(db.Begin())
-	insSession := throw2(tx.Prepare("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)"))
-	insDoc := throw2(tx.Prepare("INSERT INTO docs (body, session, n, role, ts) VALUES (?,?,?,?,?)"))
+	insSession := throw2(tx.Prepare("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?)"))
+	insDoc := throw2(tx.Prepare("INSERT INTO docs (rowid, body, session, n, role, ts) VALUES (?,?,?,?,?,?)"))
 	sessions, docs := 0, 0
+	lastTS := ""
 	started := time.Now()
 
-	// Every pile file (and any sessions/ object not yet folded in) holds
-	// portions of many sessions; gather them by session first.
-	bySession := map[string][][]byte{}
-	var order []string
+	// The docs of a session get consecutive rowids in order of n, starting
+	// at its first_rowid, so serve reads a session as one rowid range
+	// instead of scanning the whole docs table.
+	rowid := int64(1)
 
-	for _, o := range append(store.list("pile/"), store.list("sessions/")...) {
-		for _, line := range decodeFrames(store.get(o.key)) {
-			session := portionSession(line)
+	// Every pile file holds portions of many sessions, sorted by session;
+	// read all of them at once, one whole session at a time. Files from
+	// before the pile was sorted are left to merge to sort out.
+	var keys []string
 
-			if session == "" {
-				continue
-			}
-
-			if _, seen := bySession[session]; !seen {
-				order = append(order, session)
-			}
-
-			bySession[session] = append(bySession[session], line)
+	for _, o := range store.list("pile/") {
+		if strings.HasSuffix(o.key, pileSorted) {
+			keys = append(keys, o.key)
 		}
 	}
 
-	for _, session := range order {
+	// A pile file that breaks off costs only what follows the break: the
+	// index is rebuilt from scratch every run.
+	eachSession(store, keys, false, func(session string, lines [][]byte) {
 		exc := try(func() {
-			n := normalize(session, bySession[session])
+			n := normalize(session, lines)
 
 			if n == nil {
 				return
 			}
 
 			i := n.info
-			throw2(insSession.Exec(i.Session, i.Agent, i.Host, i.User, i.Cwd, i.Title, i.FirstTS, i.LastTS, i.Turns, i.Bytes))
+			throw2(insSession.Exec(i.Session, i.Agent, i.Host, i.User, i.Cwd, i.Title, i.FirstTS, i.LastTS, i.Turns, i.Bytes, rowid))
 
 			for _, d := range n.docs {
-				throw2(insDoc.Exec(d.Body, i.Session, d.N, d.Role, d.TS))
+				throw2(insDoc.Exec(rowid, d.Body, i.Session, d.N, d.Role, d.TS))
+				rowid++
 			}
 
 			sessions++
 			docs += len(n.docs)
+
+			if i.LastTS > lastTS {
+				lastTS = i.LastTS
+			}
 		})
 
 		if exc != nil {
 			slog.Warn("index: skipping session", "session", session, "err", exc.Error())
 		}
-	}
+	})
 
 	for k, v := range map[string]string{
 		"built_at": nowRFC3339(),
+		"last_ts":  lastTS,
 		"sessions": itoa(int64(sessions)),
 		"docs":     itoa(int64(docs)),
 	} {
@@ -129,17 +135,25 @@ func buildIndex(store objectStore, keep string) {
 	throw2(db.Exec("INSERT INTO docs(docs) VALUES ('optimize')"))
 	throw(db.Close())
 
-	raw := throw2(os.ReadFile(path))
-
 	if keep != "" {
-		throw(os.WriteFile(keep, raw, 0644))
+		copyFile(path, keep)
 	}
 
-	var buf bytes.Buffer
-	enc := throw2(zstd.NewWriter(&buf))
-	throw2(enc.Write(raw))
-	throw(enc.Close())
-	store.put(indexKey, buf.Bytes())
+	zst := path + ".zst"
+	compressFile(path, zst)
+	store.putFile(indexKey, zst)
 
-	slog.Info("index: published", "sessions", sessions, "docs", docs, "bytes", len(raw), "compressed", buf.Len(), "took", time.Since(started).Round(time.Millisecond))
+	slog.Info("index: published", "sessions", sessions, "docs", docs, "bytes", fileSize(path), "compressed", fileSize(zst), "took", time.Since(started).Round(time.Millisecond))
+}
+
+func compressFile(src, dst string) {
+	in := throw2(os.Open(src))
+	defer in.Close()
+
+	out := throw2(os.Create(dst))
+	enc := throw2(zstd.NewWriter(out))
+	_, cerr := io.Copy(enc, in)
+	throw(enc.Close())
+	throw(out.Close())
+	throw(cerr)
 }
