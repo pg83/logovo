@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,10 @@ const (
 	defaultCollectURL = "https://logovo.lab.mesh/v1/portions"
 	maxPortionBytes   = 4 << 20
 )
+
+// A version web hands out is a commit sha; anything else, such as a
+// captive portal's login page answering in its place, is not an update.
+var commitRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 type scanRoot struct {
 	agent string
@@ -102,6 +108,10 @@ func scanMain(args []string) {
 	}
 
 	for {
+		if !*once {
+			s.update()
+		}
+
 		s.pass()
 
 		if *once {
@@ -110,6 +120,86 @@ func scanMain(args []string) {
 
 		time.Sleep(*interval)
 	}
+}
+
+// update swaps the running binary for the one web hands out when web runs
+// another version, then exits so launchd or systemd starts the new one.
+// A non-200 answer means a server without /v1/client (a bare collector,
+// an older web) and is skipped quietly; any other failure is logged and
+// scanning goes on with the binary it has.
+func (s *scanner) update() {
+	try(func() {
+		base := strings.TrimSuffix(s.url, "/v1/portions")
+		resp := s.getOK(base + "/v1/client/version")
+
+		if resp == nil {
+			return
+		}
+
+		defer resp.Body.Close()
+
+		want := strings.TrimSpace(string(throw2(io.ReadAll(io.LimitReader(resp.Body, 4096)))))
+
+		if !commitRe.MatchString(want) || want == version {
+			return
+		}
+
+		bin := s.getOK(base + "/v1/client/" + runtime.GOOS + "-" + runtime.GOARCH)
+
+		if bin == nil {
+			return
+		}
+
+		defer bin.Body.Close()
+
+		// On the nodes the binary is reached through a symlink; the file it
+		// points at is the one to replace.
+		exe := throw2(filepath.EvalSymlinks(throw2(os.Executable())))
+		installBinary(exe, bin.Body, bin.ContentLength)
+
+		slog.Info("scan: updated, restarting", "from", version, "to", want, "path", exe)
+		os.Exit(0)
+	}).catch(func(exc *Exception) {
+		slog.Warn("scan: update failed", "err", exc.Error())
+	})
+}
+
+// getOK GETs u and returns the response when it is a 200, nil otherwise.
+func (s *scanner) getOK(u string) *http.Response {
+	resp := throw2(s.client.Get(u))
+
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+
+		return nil
+	}
+
+	return resp
+}
+
+// installBinary writes body next to exe and renames it over exe: the same
+// directory keeps the rename on one file system, so the swap is atomic and
+// the running process keeps its old inode.
+func installBinary(exe string, body io.Reader, size int64) {
+	tmp := exe + ".update"
+	f := throw2(os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755))
+
+	try(func() {
+		n, cerr := io.Copy(f, body)
+		throw(f.Sync())
+		throw(f.Close())
+		throw(cerr)
+		throw(os.Chmod(tmp, 0755))
+
+		if n != size {
+			throwFmt("got %d bytes, server sent %d", n, size)
+		}
+
+		throw(os.Rename(tmp, exe))
+	}).catch(func(exc *Exception) {
+		os.Remove(tmp)
+		exc.throw()
+	})
 }
 
 // pass walks every root once. A file that fails to ship is left where it
