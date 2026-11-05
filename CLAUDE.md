@@ -28,7 +28,8 @@ merge (job, every minute)      queue/* (already in session order) repacked into 
                                a queue object that does not decode is moved to bad/
 index (job, every N minutes)   pile/*.sorted merged by session, one session at a time
                                -> normalize -> index/logovo.sqlite.zst
-serve (every lab host)         fetches the index when it changes; /v1/search, /v1/sessions/<uuid>
+serve (every lab host)         fetches the index when it changes; /v1/search, /v1/sessions/<uuid>,
+                               and MCP (tools search, show) at POST /v1/mcp
 search, show (CLI)             thin clients, default https://logovo.lab.mesh
 ```
 

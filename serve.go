@@ -75,6 +75,7 @@ func serveMain(args []string) {
 	mux.HandleFunc("GET /v1/search", s.handleSearch)
 	mux.HandleFunc("GET /v1/sessions/{id}", s.handleSession)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
+	mux.HandleFunc("POST /v1/mcp", s.handleMCP)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok\n"))
 	})
@@ -312,6 +313,31 @@ func (s *server) session(id string, from, to int) (sessionInfo, []doc) {
 	return info, docs
 }
 
+func writeSession(w io.Writer, info sessionInfo, docs []doc) {
+	fmt.Fprintf(w, "# %s %s %s@%s %s\n# %s .. %s, %d turns\n# %s\n",
+		info.Session, info.Agent, info.User, info.Host, info.Cwd, shortTS(info.FirstTS), shortTS(info.LastTS), info.Turns, info.Title)
+
+	if info.Parent != "" {
+		fmt.Fprintf(w, "# forked from %s after its turn %d; turns 0..%d are copies\n", info.Parent, info.ParentN, info.Copied-1)
+	}
+
+	if len(info.Forks) > 0 {
+		var forks []string
+
+		for _, f := range info.Forks {
+			forks = append(forks, fmt.Sprintf("%s (copies %d turns)", f.Session, f.Copied))
+		}
+
+		fmt.Fprintf(w, "# forks: %s\n", strings.Join(forks, ", "))
+	}
+
+	fmt.Fprintln(w)
+
+	for _, d := range docs {
+		fmt.Fprintf(w, "[%d] %s %s:\n%s\n\n", d.N, shortTS(d.TS), d.Role, d.Body)
+	}
+}
+
 func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	try(func() {
 		id := r.PathValue("id")
@@ -340,28 +366,7 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintf(w, "# %s %s %s@%s %s\n# %s .. %s, %d turns\n# %s\n",
-			info.Session, info.Agent, info.User, info.Host, info.Cwd, shortTS(info.FirstTS), shortTS(info.LastTS), info.Turns, info.Title)
-
-		if info.Parent != "" {
-			fmt.Fprintf(w, "# forked from %s after its turn %d; turns 0..%d are copies\n", info.Parent, info.ParentN, info.Copied-1)
-		}
-
-		if len(info.Forks) > 0 {
-			var forks []string
-
-			for _, f := range info.Forks {
-				forks = append(forks, fmt.Sprintf("%s (copies %d turns)", f.Session, f.Copied))
-			}
-
-			fmt.Fprintf(w, "# forks: %s\n", strings.Join(forks, ", "))
-		}
-
-		fmt.Fprintln(w)
-
-		for _, d := range docs {
-			fmt.Fprintf(w, "[%d] %s %s:\n%s\n\n", d.N, shortTS(d.TS), d.Role, d.Body)
-		}
+		writeSession(w, info, docs)
 	}).catch(func(exc *Exception) {
 		status := http.StatusBadRequest
 
