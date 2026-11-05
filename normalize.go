@@ -228,7 +228,10 @@ func parseClaude(n *normalized, records []string) {
 		IsMeta    bool   `json:"isMeta"`
 		AiTitle   string `json:"aiTitle"`
 		Summary   string `json:"summary"`
-		Message   struct {
+		Origin    struct {
+			Kind string `json:"kind"`
+		} `json:"origin"`
+		Message struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
@@ -301,6 +304,13 @@ func parseClaude(n *normalized, records []string) {
 
 			if r.IsMeta {
 				continue
+			}
+
+			// Subagent reports and finished background tasks are user
+			// records too; origin names the sender, and whatever is not the
+			// human goes under that name.
+			if k := r.Origin.Kind; k != "" && k != "human" {
+				r.Message.Role = k
 			}
 
 			var s string
