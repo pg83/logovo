@@ -19,19 +19,19 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-// objectStore is the little bit of S3 the pipeline needs. dir: is the
-// same layout on a local directory, for tests and for poking at things.
+var errNotFound = errors.New("not found")
+
+const s3CallTimeout = 10 * time.Minute
+
 type objectStore interface {
 	put(key string, data []byte)
 	get(key string) []byte
-	// open and putFile are get and put for objects too big to hold in
-	// memory.
+
 	open(key string) io.ReadCloser
 	putFile(key, path string)
 	list(prefix string) []object
 	del(key string)
-	// stat returns a value that changes whenever the object changes and
-	// whether the object exists at all.
+
 	stat(key string) (string, bool)
 }
 
@@ -39,8 +39,6 @@ type object struct {
 	key  string
 	size int64
 }
-
-var errNotFound = errors.New("not found")
 
 func openStore(spec string) objectStore {
 	switch {
@@ -60,7 +58,7 @@ type dirStore struct {
 }
 
 func newDirStore(root string) *dirStore {
-	throw(os.MkdirAll(root, 0755))
+	durableDirectory(root)
 
 	return &dirStore{root: root}
 }
@@ -74,11 +72,77 @@ func (d *dirStore) path(key string) string {
 }
 
 func (d *dirStore) put(key string, data []byte) {
+	d.writeObject(key, bytes.NewReader(data))
+}
+
+func (d *dirStore) writeObject(key string, src io.Reader) {
 	p := d.path(key)
-	throw(os.MkdirAll(filepath.Dir(p), 0755))
-	tmp := p + ".tmp"
-	throw(os.WriteFile(tmp, data, 0644))
-	throw(os.Rename(tmp, p))
+	dir := filepath.Dir(p)
+
+	durableDirectory(dir)
+
+	f := throw2(os.CreateTemp(dir, "."+filepath.Base(p)+"-*.tmp"))
+
+	defer f.Close()
+
+	defer os.Remove(f.Name())
+
+	throw(f.Chmod(0644))
+	throw2(io.Copy(f, src))
+	throw(f.Sync())
+	throw(f.Close())
+	throw(os.Rename(f.Name(), p))
+	syncParents(dir)
+}
+
+func syncParents(path string) {
+	path = throw2(filepath.Abs(path))
+
+	for {
+		syncDirectory(path)
+		parent := filepath.Dir(path)
+
+		if parent == path {
+			return
+		}
+
+		path = parent
+	}
+}
+
+func syncDirectory(path string) {
+	f := throw2(os.Open(path))
+
+	defer f.Close()
+
+	throw(f.Sync())
+}
+
+func durableDirectory(path string) {
+	info, err := os.Stat(path)
+
+	if err == nil {
+		if !info.IsDir() {
+			throwFmt("store: not a directory: %s", path)
+		}
+
+		return
+	}
+
+	if !errors.Is(err, fs.ErrNotExist) {
+		throw(err)
+	}
+
+	parent := filepath.Dir(path)
+
+	durableDirectory(parent)
+	err = os.Mkdir(path, 0755)
+
+	if err != nil && !errors.Is(err, fs.ErrExist) {
+		throw(err)
+	}
+
+	syncDirectory(parent)
 }
 
 func (d *dirStore) get(key string) []byte {
@@ -106,11 +170,11 @@ func (d *dirStore) open(key string) io.ReadCloser {
 }
 
 func (d *dirStore) putFile(key, path string) {
-	p := d.path(key)
-	throw(os.MkdirAll(filepath.Dir(p), 0755))
-	tmp := p + ".tmp"
-	copyFile(path, tmp)
-	throw(os.Rename(tmp, p))
+	f := throw2(os.Open(path))
+
+	defer f.Close()
+
+	d.writeObject(key, f)
 }
 
 func (d *dirStore) list(prefix string) []object {
@@ -125,6 +189,7 @@ func (d *dirStore) list(prefix string) []object {
 
 		if strings.HasPrefix(key, prefix) {
 			info := throw2(entry.Info())
+
 			objects = append(objects, object{key: key, size: info.Size()})
 		}
 
@@ -142,6 +207,10 @@ func (d *dirStore) del(key string) {
 
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		throw(err)
+	}
+
+	if err == nil {
+		syncDirectory(filepath.Dir(d.path(key)))
 	}
 }
 
@@ -161,11 +230,6 @@ type s3Store struct {
 	bucket string
 	cli    *s3.Client
 }
-
-// Every call gets a deadline: a store that stops answering (drives
-// stalling under MinIO, a lost node) must fail the job, not hang it
-// forever holding its lock.
-const s3CallTimeout = 10 * time.Minute
 
 func s3ctx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), s3CallTimeout)
@@ -227,6 +291,7 @@ func isS3NotFound(err error) bool {
 
 func (s *s3Store) put(key string, data []byte) {
 	ctx, cancel := s3ctx()
+
 	defer cancel()
 
 	throw2(s.cli.PutObject(ctx, &s3.PutObjectInput{
@@ -238,6 +303,7 @@ func (s *s3Store) put(key string, data []byte) {
 
 func (s *s3Store) get(key string) []byte {
 	ctx, cancel := s3ctx()
+
 	defer cancel()
 
 	resp, err := s.cli.GetObject(ctx, &s3.GetObjectInput{
@@ -250,28 +316,24 @@ func (s *s3Store) get(key string) []byte {
 	}
 
 	throw(err)
+
 	defer resp.Body.Close()
 
 	return throw2(io.ReadAll(resp.Body))
 }
 
-// s3Body bounds every read, not the life of the body: a streaming reader
-// may legitimately hold it for the whole job (index keeps all pile files
-// open), yet a store that stops answering must still fail the job, so
-// each read gets s3CallTimeout of its own.
 type s3Body struct {
 	io.ReadCloser
 	cancel context.CancelCauseFunc
 }
 
-// s3Timeout cancels with DeadlineExceeded, so a stalled store reads as a
-// timeout in the job's log rather than as somebody's cancellation.
 func s3Timeout(cancel context.CancelCauseFunc) *time.Timer {
 	return time.AfterFunc(s3CallTimeout, func() { cancel(context.DeadlineExceeded) })
 }
 
 func (b *s3Body) read(p []byte) (int, error) {
 	t := s3Timeout(b.cancel)
+
 	defer t.Stop()
 
 	return b.ReadCloser.Read(p)
@@ -292,8 +354,6 @@ func (b *s3Body) Close() error {
 }
 
 func (s *s3Store) open(key string) io.ReadCloser {
-	// The request itself gets the usual deadline; the body is then
-	// bounded read by read (s3Body).
 	ctx, cancel := context.WithCancelCause(context.Background())
 	t := s3Timeout(cancel)
 
@@ -319,9 +379,11 @@ func (s *s3Store) open(key string) io.ReadCloser {
 
 func (s *s3Store) putFile(key, path string) {
 	f := throw2(os.Open(path))
+
 	defer f.Close()
 
 	ctx, cancel := s3ctx()
+
 	defer cancel()
 
 	throw2(s.cli.PutObject(ctx, &s3.PutObjectInput{
@@ -333,6 +395,7 @@ func (s *s3Store) putFile(key, path string) {
 
 func (s *s3Store) list(prefix string) []object {
 	ctx, cancel := s3ctx()
+
 	defer cancel()
 
 	var objects []object
@@ -363,6 +426,7 @@ func (s *s3Store) list(prefix string) []object {
 
 func (s *s3Store) del(key string) {
 	ctx, cancel := s3ctx()
+
 	defer cancel()
 
 	throw2(s.cli.DeleteObject(ctx, &s3.DeleteObjectInput{
@@ -373,6 +437,7 @@ func (s *s3Store) del(key string) {
 
 func (s *s3Store) stat(key string) (string, bool) {
 	ctx, cancel := s3ctx()
+
 	defer cancel()
 
 	resp, err := s.cli.HeadObject(ctx, &s3.HeadObjectInput{

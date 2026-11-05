@@ -38,3 +38,7 @@ The original record remains in the local session log.
 Search JSON delimits matched snippet text with U+0002 and U+0003. The page
 uses these markers for highlighting; CLI and MCP text render them as
 brackets. Literal brackets in the archived text remain unchanged.
+
+The directory store syncs object data before renaming it and syncs its
+directory entries before acknowledging an upload or deleting merge
+inputs. Failed writes retain their inputs for retry.
