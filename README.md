@@ -15,3 +15,18 @@ run as scheduled jobs, `serve` answers `/v1/search` and `/v1/sessions/<id>`
 from the latest index, `web` is the page in front of it.
 
 See `CLAUDE.md` for the pipeline and `logovo` without arguments for the flags.
+
+`serve` streams the compressed index from storage into a local file and
+keeps the loaded index if a refresh fails. `index` also preserves the
+published index on archive read errors. For deliberate recovery,
+`index -allow-partial` publishes readable data and marks `/v1/status` with
+`complete=false` and `broken_files`; the page displays an incomplete archive.
+Damaged queue objects are retained under `bad/queue/` by `merge`.
+
+When upgrading an archive created before sorted pile files, stop the
+scheduled `index` job, update the `merge` and `index` jobs, run `merge`
+followed by `index`, and then update `serve`. Resume the index schedule
+afterwards. The first merge converts old `pile/` and `sessions/` objects
+to `pile/*.sorted`; indexing refuses unmigrated objects. Keep the new
+archive workers in place: old merge binaries write the previous format.
+The new API requires a rebuilt index with the fork metadata columns.

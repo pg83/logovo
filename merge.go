@@ -87,8 +87,9 @@ func repack(store objectStore, fill func(w io.Writer)) (string, int64) {
 // the first file's, then the second's, and so on. Lines that are not
 // portions are skipped. A file that cannot be read to its end fails the
 // call when strict; otherwise it is logged and counts as ended there.
-func eachSession(store objectStore, keys []string, strict bool, cb func(session string, lines [][]byte)) {
+func eachSession(store objectStore, keys []string, strict bool, cb func(session string, lines [][]byte)) int {
 	readers := make([]*lineReader, len(keys))
+	broken := 0
 	heads := make([][]byte, len(keys))
 	sessions := make([]string, len(keys))
 
@@ -105,6 +106,7 @@ func eachSession(store objectStore, keys []string, strict bool, cb func(session 
 		var line []byte
 
 		try(func() { line = readers[i].next() }).catch(func(exc *Exception) {
+			broken++
 			slog.Error("pile file broken, read up to the break", "key", keys[i], "err", exc.Error())
 		})
 
@@ -145,7 +147,7 @@ func eachSession(store objectStore, keys []string, strict bool, cb func(session 
 		}
 
 		if session == "" {
-			return
+			return broken
 		}
 
 		var lines [][]byte

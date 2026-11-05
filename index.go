@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,18 +52,19 @@ func indexMain(args []string) {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
 	storeSpec := fs.String("store", "", "dir:/path or s3://bucket")
 	out := fs.String("out", "", "also keep the uncompressed database at this path")
+	allowPartial := fs.Bool("allow-partial", false, "publish readable data even when an archive object is damaged")
 	throw(fs.Parse(args))
 
 	if *storeSpec == "" {
 		throwFmt("index: -store is required")
 	}
 
-	buildIndex(openStore(*storeSpec), *out)
+	buildIndex(openStore(*storeSpec), *out, *allowPartial)
 }
 
 // buildIndex reads every session, normalizes it and writes one fresh
 // database; the previous index is replaced whole, nothing incremental.
-func buildIndex(store objectStore, keep string) {
+func buildIndex(store objectStore, keep string, allowPartial bool) {
 	// Built next to the working directory, not in TMPDIR: as a gorn task
 	// the job may only write where it runs.
 	dir := throw2(os.MkdirTemp(".", "logovo-index-"))
@@ -70,6 +72,7 @@ func buildIndex(store objectStore, keep string) {
 
 	path := filepath.Join(dir, "logovo.sqlite")
 	db := throw2(sql.Open("sqlite", "file:"+path))
+	defer db.Close()
 	throw2(db.Exec("PRAGMA journal_mode=OFF"))
 	throw2(db.Exec("PRAGMA synchronous=OFF"))
 	throw2(db.Exec(schema))
@@ -78,6 +81,7 @@ func buildIndex(store objectStore, keep string) {
 	throw2(db.Exec("PRAGMA temp_store_directory = '" + dir + "'"))
 
 	tx := throw2(db.Begin())
+	defer tx.Rollback()
 	insSession := throw2(tx.Prepare("INSERT INTO sessions (session, agent, host, user, cwd, title, first_ts, last_ts, turns, bytes, first_rowid) VALUES (?,?,?,?,?,?,?,?,?,?,?)"))
 	insDoc := throw2(tx.Prepare("INSERT INTO docs (rowid, body, session, n, role, ts) VALUES (?,?,?,?,?,?)"))
 
@@ -101,41 +105,41 @@ func buildIndex(store objectStore, keep string) {
 	// before the pile was sorted are left to merge to sort out.
 	var keys []string
 
+	if len(store.list("sessions/")) > 0 {
+		throwFmt("index: archive requires migration; run merge before index")
+	}
+
 	for _, o := range store.list("pile/") {
-		if strings.HasSuffix(o.key, pileSorted) {
-			keys = append(keys, o.key)
+		if !strings.HasSuffix(o.key, pileSorted) {
+			throwFmt("index: %s requires migration; run merge before index", o.key)
 		}
+
+		keys = append(keys, o.key)
 	}
 
 	// A pile file that breaks off costs only what follows the break: the
 	// index is rebuilt from scratch every run.
-	eachSession(store, keys, false, func(session string, lines [][]byte) {
-		exc := try(func() {
-			n := normalize(session, lines)
+	broken := eachSession(store, keys, !allowPartial, func(session string, lines [][]byte) {
+		n := normalize(session, lines)
 
-			if n == nil {
-				return
-			}
+		if n == nil {
+			return
+		}
 
-			i := n.info
-			throw2(insSession.Exec(i.Session, i.Agent, i.Host, i.User, i.Cwd, i.Title, i.FirstTS, i.LastTS, i.Turns, i.Bytes, rowid))
+		i := n.info
+		throw2(insSession.Exec(i.Session, i.Agent, i.Host, i.User, i.Cwd, i.Title, i.FirstTS, i.LastTS, i.Turns, i.Bytes, rowid))
 
-			for _, d := range n.docs {
-				throw2(insDoc.Exec(rowid, d.Body, i.Session, d.N, d.Role, d.TS))
-				throw2(insKey.Exec(rowid, i.Session, d.N, d.TS, docKey(d), textKey(d)))
-				rowid++
-			}
+		for _, d := range n.docs {
+			throw2(insDoc.Exec(rowid, d.Body, i.Session, d.N, d.Role, d.TS))
+			throw2(insKey.Exec(rowid, i.Session, d.N, d.TS, docKey(d), textKey(d)))
+			rowid++
+		}
 
-			sessions++
-			docs += len(n.docs)
+		sessions++
+		docs += len(n.docs)
 
-			if i.LastTS > lastTS {
-				lastTS = i.LastTS
-			}
-		})
-
-		if exc != nil {
-			slog.Warn("index: skipping session", "session", session, "err", exc.Error())
+		if i.LastTS > lastTS {
+			lastTS = i.LastTS
 		}
 	})
 
@@ -144,10 +148,12 @@ func buildIndex(store objectStore, keep string) {
 	}
 
 	for k, v := range map[string]string{
-		"built_at": nowRFC3339(),
-		"last_ts":  lastTS,
-		"sessions": itoa(int64(sessions)),
-		"docs":     itoa(int64(docs)),
+		"built_at":     nowRFC3339(),
+		"last_ts":      lastTS,
+		"complete":     strconv.FormatBool(broken == 0),
+		"broken_files": itoa(int64(broken)),
+		"sessions":     itoa(int64(sessions)),
+		"docs":         itoa(int64(docs)),
 	} {
 		throw2(tx.Exec("INSERT INTO meta VALUES (?,?)", k, v))
 	}

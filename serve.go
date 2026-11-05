@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"flag"
@@ -100,11 +99,15 @@ func (s *server) refresh() {
 		return
 	}
 
-	dec := throw2(zstd.NewReader(bytes.NewReader(s.store.get(indexKey))))
+	body := s.store.open(indexKey)
+	defer body.Close()
+
+	dec := throw2(zstd.NewReader(body))
 	defer dec.Close()
 
 	path := filepath.Join(s.dir, "index-"+strconv.FormatInt(time.Now().UnixNano(), 36)+".sqlite")
 	f := throw2(os.Create(path))
+	defer f.Close()
 
 	// A failed refresh leaves nothing behind; the loaded index stays.
 	try(func() {

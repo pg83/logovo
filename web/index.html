@@ -106,7 +106,7 @@ turns ${from}..${Math.min(to, s.turns - 1)} <a href="#" id="more-before">earlier
 }
 
 $('#f').onsubmit = e => { e.preventDefault(); const q = $('#q').value.trim(); if (q) search(q); };
-api('/v1/status').then(m => { $('#status').textContent = `${m.sessions} sessions, ${m.docs} turns, built ${short(m.built_at)}`; }).catch(() => {});
+api('/v1/status').then(m => { $('#status').textContent = `${m.sessions} sessions, ${m.docs} turns, built ${short(m.built_at)}${m.complete === 'false' ? ' · incomplete archive' : ''}`; }).catch(() => {});
 const q0 = new URLSearchParams(location.search).get('q');
 if (q0) { $('#q').value = q0; search(q0); }
 </script>

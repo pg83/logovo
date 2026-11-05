@@ -16,8 +16,9 @@ Client:
 
 Lab:
   collect [-listen ADDR] -store STORE     accept portions, write them to queue/
-  merge -store STORE                      append queue/ portions to sessions/
-  index -store STORE [-out FILE]          rebuild index/ from every session
+  merge -store STORE                      fold queue/ into the sorted archive
+  index -store STORE [-out FILE] [-allow-partial]
+        rebuild index/; damaged archive objects fail without replacing it
   serve [-listen ADDR] -store STORE       search API over the latest index
   web [-listen ADDR] [-api URL] [-collect URL]
         the page; proxies /v1/portions to collect and the rest of /v1/ to serve
