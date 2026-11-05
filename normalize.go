@@ -142,7 +142,7 @@ func normalize(session string, lines [][]byte) *normalized {
 
 	if n.info.Title == "" {
 		for _, d := range n.docs {
-			if d.Role == "user" {
+			if d.Role == "user" && !commandMarkup(d.Body) {
 				n.info.Title = truncate(oneLine(d.Body), maxTitleChars)
 
 				break
@@ -161,6 +161,16 @@ func (n *normalized) add(role, ts, body string) {
 	}
 
 	n.docs = append(n.docs, doc{Role: role, TS: ts, Body: body})
+}
+
+func commandMarkup(text string) bool {
+	for _, prefix := range []string{"<command-name>", "<command-message>", "<local-command-stdout>", "<local-command-stderr>"} {
+		if strings.HasPrefix(strings.TrimSpace(text), prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // toolCall renders a tool invocation on one line, the command itself for
@@ -222,13 +232,15 @@ func parseClaude(n *normalized, records []string) {
 	}
 
 	type record struct {
-		Type      string `json:"type"`
-		Timestamp string `json:"timestamp"`
-		Cwd       string `json:"cwd"`
-		IsMeta    bool   `json:"isMeta"`
-		AiTitle   string `json:"aiTitle"`
-		Summary   string `json:"summary"`
-		Origin    struct {
+		Type             string `json:"type"`
+		Timestamp        string `json:"timestamp"`
+		Cwd              string `json:"cwd"`
+		IsMeta           bool   `json:"isMeta"`
+		IsCompactSummary bool   `json:"isCompactSummary"`
+		AiTitle          string `json:"aiTitle"`
+		CustomTitle      string `json:"customTitle"`
+		Summary          string `json:"summary"`
+		Origin           struct {
 			Kind string `json:"kind"`
 		} `json:"origin"`
 		Message struct {
@@ -251,6 +263,7 @@ func parseClaude(n *normalized, records []string) {
 	// which must not count twice. Once the agent answers, the same text
 	// again is a new message.
 	queued := map[string]bool{}
+	customTitle := false
 
 	requeued := func(text string) bool {
 		text = strings.TrimSpace(text)
@@ -276,8 +289,13 @@ func parseClaude(n *normalized, records []string) {
 		}
 
 		switch r.Type {
+		case "custom-title":
+			if r.CustomTitle != "" {
+				n.info.Title = truncate(oneLine(r.CustomTitle), maxTitleChars)
+				customTitle = true
+			}
 		case "ai-title":
-			if r.AiTitle != "" {
+			if !customTitle && r.AiTitle != "" {
 				n.info.Title = truncate(oneLine(r.AiTitle), maxTitleChars)
 			}
 		case "summary":
@@ -313,10 +331,14 @@ func parseClaude(n *normalized, records []string) {
 				r.Message.Role = k
 			}
 
+			if r.IsCompactSummary {
+				r.Message.Role = "summary"
+			}
+
 			var s string
 
 			if json.Unmarshal(r.Message.Content, &s) == nil {
-				if !requeued(s) {
+				if r.Message.Role != "user" || !requeued(s) {
 					n.add(r.Message.Role, r.Timestamp, s)
 				}
 
@@ -342,7 +364,7 @@ func parseClaude(n *normalized, records []string) {
 				}
 			}
 
-			if body := strings.Join(text, "\n"); !requeued(body) {
+			if body := strings.Join(text, "\n"); r.Message.Role != "user" || !requeued(body) {
 				n.add(r.Message.Role, r.Timestamp, body)
 			}
 
@@ -367,11 +389,12 @@ func parseCodex(n *normalized, records []string) {
 		Name      string          `json:"name"`
 		Arguments string          `json:"arguments"`
 		Input     string          `json:"input"`
-		Output    string          `json:"output"`
+		Output    json.RawMessage `json:"output"`
 		Cwd       string          `json:"cwd"`
 		Timestamp string          `json:"timestamp"`
 		Action    struct {
-			Query string `json:"query"`
+			Query   string   `json:"query"`
+			Command []string `json:"command"`
 		} `json:"action"`
 	}
 
@@ -414,10 +437,14 @@ func parseCodex(n *normalized, records []string) {
 				n.add(p.Role, r.Timestamp, text)
 			case "function_call":
 				n.add("assistant", r.Timestamp, toolCall(p.Name, json.RawMessage(p.Arguments)))
+			case "local_shell_call":
+				if len(p.Action.Command) > 0 {
+					n.add("assistant", r.Timestamp, "▶ shell: "+truncate(oneLine(strings.Join(p.Action.Command, " ")), maxArgsChars))
+				}
 			case "custom_tool_call":
 				n.add("assistant", r.Timestamp, "▶ "+p.Name+": "+truncate(oneLine(p.Input), maxArgsChars))
 			case "function_call_output", "custom_tool_call_output":
-				out := p.Output
+				out := blockText(p.Output)
 				var wrapped struct {
 					Output string `json:"output"`
 				}
