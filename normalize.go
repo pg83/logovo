@@ -6,16 +6,20 @@ import (
 	"strings"
 )
 
-// What the index holds: one document per message the agent or the user
-// produced, tool calls and their results included, thinking left out.
-type doc struct {
+const (
+	maxArgsChars   = 400
+	maxResultChars = 1500
+	maxTitleChars  = 80
+)
+
+type Doc struct {
 	N    int    `json:"n"`
 	Role string `json:"role"`
 	TS   string `json:"ts"`
 	Body string `json:"body"`
 }
 
-type sessionInfo struct {
+type SessionInfo struct {
 	Session string `json:"session"`
 	Agent   string `json:"agent"`
 	Host    string `json:"host"`
@@ -27,35 +31,25 @@ type sessionInfo struct {
 	Turns   int    `json:"turns"`
 	Bytes   int64  `json:"bytes"`
 
-	// A fork's first copied docs are the parent's, up to its doc parent_n;
-	// forks are the sessions forked from this one. The index and serve work
-	// them out across sessions, so normalize leaves them empty.
 	Parent  string    `json:"parent"`
 	Copied  int       `json:"copied"`
 	ParentN int       `json:"parent_n"`
-	Forks   []forkRef `json:"forks"`
+	Forks   []ForkRef `json:"forks"`
 }
 
-type forkRef struct {
+type ForkRef struct {
 	Session string `json:"session"`
 	Copied  int    `json:"copied"`
 }
 
-type normalized struct {
-	info sessionInfo
-	docs []doc
+type Normalized struct {
+	info SessionInfo
+	docs []Doc
 }
 
-const (
-	maxArgsChars   = 400
-	maxResultChars = 1500
-	maxTitleChars  = 80
-)
-
-// normalize turns the portions of one session, in any order and with
-// duplicates, into the documents the index stores.
-func normalize(session string, lines [][]byte) *normalized {
+func normalize(session string, lines [][]byte) *Normalized {
 	seen := map[string]bool{}
+
 	var portions []*Portion
 	var bytes int64
 
@@ -91,10 +85,6 @@ func normalize(session string, lines [][]byte) *normalized {
 		return portions[i].Offset < portions[j].Offset
 	})
 
-	// Portions are byte ranges of the session file (offset, then one
-	// newline-terminated record after another). A file shipped again from
-	// scratch, or a retried chunk, covers bytes already seen: keep each
-	// byte range once, in file order.
 	var records []string
 	var covered int64
 
@@ -114,7 +104,7 @@ func normalize(session string, lines [][]byte) *normalized {
 		}
 	}
 
-	n := &normalized{info: sessionInfo{
+	n := &Normalized{info: SessionInfo{
 		Session: session,
 		Agent:   portions[0].Agent,
 		Host:    portions[0].Host,
@@ -153,14 +143,14 @@ func normalize(session string, lines [][]byte) *normalized {
 	return n
 }
 
-func (n *normalized) add(role, ts, body string) {
+func (n *Normalized) add(role, ts, body string) {
 	body = strings.TrimSpace(body)
 
 	if body == "" {
 		return
 	}
 
-	n.docs = append(n.docs, doc{Role: role, TS: ts, Body: body})
+	n.docs = append(n.docs, Doc{Role: role, TS: ts, Body: body})
 }
 
 func commandMarkup(text string) bool {
@@ -173,8 +163,6 @@ func commandMarkup(text string) bool {
 	return false
 }
 
-// toolCall renders a tool invocation on one line, the command itself for
-// shells and file paths for editors, compact JSON otherwise.
 func toolCall(name string, input json.RawMessage) string {
 	var args map[string]any
 
@@ -193,8 +181,6 @@ func toolResult(text string) string {
 	return "◀ " + truncate(strings.TrimSpace(text), maxResultChars)
 }
 
-// blockText flattens Anthropic-style content: a string, or a list of
-// blocks with a text field.
 func blockText(raw json.RawMessage) string {
 	var s string
 
@@ -222,8 +208,8 @@ func blockText(raw json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-func parseClaude(n *normalized, records []string) {
-	type block struct {
+func parseClaude(n *Normalized, records []string) {
+	type Block struct {
 		Type    string          `json:"type"`
 		Text    string          `json:"text"`
 		Name    string          `json:"name"`
@@ -231,7 +217,7 @@ func parseClaude(n *normalized, records []string) {
 		Content json.RawMessage `json:"content"`
 	}
 
-	type record struct {
+	type Record struct {
 		Type             string `json:"type"`
 		Timestamp        string `json:"timestamp"`
 		Cwd              string `json:"cwd"`
@@ -257,11 +243,6 @@ func parseClaude(n *normalized, records []string) {
 		} `json:"attachment"`
 	}
 
-	// A message the user types while the agent works is written as a
-	// queued_command attachment; when the turn is interrupted it may be
-	// sent again as an ordinary user record before the agent answers,
-	// which must not count twice. Once the agent answers, the same text
-	// again is a new message.
 	queued := map[string]bool{}
 	customTitle := false
 
@@ -278,7 +259,7 @@ func parseClaude(n *normalized, records []string) {
 	}
 
 	for _, line := range records {
-		var r record
+		var r Record
 
 		if json.Unmarshal([]byte(line), &r) != nil {
 			continue
@@ -304,8 +285,6 @@ func parseClaude(n *normalized, records []string) {
 			}
 		case "attachment":
 			a := r.Attachment
-			// Before origin was recorded, the user's own messages were the
-			// ones in prompt mode.
 			human := a.Origin.Kind == "human" || a.Origin.Kind == "" && a.CommandMode == "prompt"
 
 			if a.Type != "queued_command" || !human {
@@ -313,6 +292,7 @@ func parseClaude(n *normalized, records []string) {
 			}
 
 			text := blockText(a.Prompt)
+
 			queued[strings.TrimSpace(text)] = true
 			n.add("user", r.Timestamp, text)
 		case "user", "assistant":
@@ -324,9 +304,6 @@ func parseClaude(n *normalized, records []string) {
 				continue
 			}
 
-			// Subagent reports and finished background tasks are user
-			// records too; origin names the sender, and whatever is not the
-			// human goes under that name.
 			if k := r.Origin.Kind; k != "" && k != "human" {
 				r.Message.Role = k
 			}
@@ -345,7 +322,7 @@ func parseClaude(n *normalized, records []string) {
 				continue
 			}
 
-			var blocks []block
+			var blocks []Block
 
 			if json.Unmarshal(r.Message.Content, &blocks) != nil {
 				continue
@@ -381,8 +358,8 @@ func parseClaude(n *normalized, records []string) {
 	}
 }
 
-func parseCodex(n *normalized, records []string) {
-	type item struct {
+func parseCodex(n *Normalized, records []string) {
+	type Item struct {
 		Type      string          `json:"type"`
 		Role      string          `json:"role"`
 		Content   json.RawMessage `json:"content"`
@@ -398,14 +375,14 @@ func parseCodex(n *normalized, records []string) {
 		} `json:"action"`
 	}
 
-	type record struct {
+	type Record struct {
 		Timestamp string `json:"timestamp"`
 		Type      string `json:"type"`
-		Payload   item   `json:"payload"`
+		Payload   Item   `json:"payload"`
 	}
 
 	for _, line := range records {
-		var r record
+		var r Record
 
 		if json.Unmarshal([]byte(line), &r) != nil {
 			continue
@@ -423,9 +400,6 @@ func parseCodex(n *normalized, records []string) {
 			case "message":
 				text := blockText(p.Content)
 
-				// Codex feeds its own instructions as developer messages
-				// and environment notes as user messages wrapped in tags;
-				// neither is the user talking.
 				if p.Role != "user" && p.Role != "assistant" {
 					continue
 				}
@@ -445,6 +419,7 @@ func parseCodex(n *normalized, records []string) {
 				n.add("assistant", r.Timestamp, "▶ "+p.Name+": "+truncate(oneLine(p.Input), maxArgsChars))
 			case "function_call_output", "custom_tool_call_output":
 				out := blockText(p.Output)
+
 				var wrapped struct {
 					Output string `json:"output"`
 				}

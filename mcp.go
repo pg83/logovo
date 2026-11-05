@@ -10,34 +10,7 @@ import (
 
 var mcpVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26"}
 
-const mcpInstructions = `logovo is the searchable archive of past Claude Code and Codex sessions from every host in the lab: what was done, which commands ran, what they printed, how it ended. Use it when the user refers to earlier work ("like last time", "how did we deploy X", "what was that error with Y") or when you need prior context that is not in the repository or the wiki: call search first, then read the relevant stretch of a session with show.`
-
-type mcpRequest struct {
-	ID     json.RawMessage `json:"id"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
-}
-
-type mcpError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type mcpResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Result  any             `json:"result,omitempty"`
-	Error   *mcpError       `json:"error,omitempty"`
-}
-
-type mcpTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-	run         func(s *server, args json.RawMessage) string
-}
-
-var mcpTools = []mcpTool{
+var mcpTools = []McpTool{
 	{
 		Name: "search",
 		Description: `Full-text search over every message of every past Claude Code and Codex session from every host: user text, assistant text, tool calls ("▶ name: command") and truncated tool results ("◀ output"). ` +
@@ -58,7 +31,7 @@ var mcpTools = []mcpTool{
 			},
 			"required": []string{"query"},
 		},
-		run: (*server).mcpSearch,
+		run: (*Server).mcpSearch,
 	},
 	{
 		Name: "show",
@@ -83,24 +56,48 @@ var mcpTools = []mcpTool{
 			},
 			"required": []string{"session", "from", "to"},
 		},
-		run: (*server).mcpShow,
+		run: (*Server).mcpShow,
 	},
 }
 
-// handleMCP speaks MCP over Streamable HTTP, statelessly: one JSON-RPC
-// message per POST, a JSON response, no SSE stream. A client of a later
-// protocol version is told 400 so that it falls back to initialize.
-func (s *server) handleMCP(w http.ResponseWriter, r *http.Request) {
+const mcpInstructions = `logovo is the searchable archive of past Claude Code and Codex sessions from every host in the lab: what was done, which commands ran, what they printed, how it ended. Use it when the user refers to earlier work ("like last time", "how did we deploy X", "what was that error with Y") or when you need prior context that is not in the repository or the wiki: call search first, then read the relevant stretch of a session with show.`
+
+type McpRequest struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+type McpError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type McpResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  any             `json:"result,omitempty"`
+	Error   *McpError       `json:"error,omitempty"`
+}
+
+type McpTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"inputSchema"`
+	run         func(s *Server, args json.RawMessage) string
+}
+
+func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	if v := r.Header.Get("MCP-Protocol-Version"); v != "" && !slices.Contains(mcpVersions, v) {
 		http.Error(w, "unsupported MCP-Protocol-Version", http.StatusBadRequest)
 
 		return
 	}
 
-	var req mcpRequest
+	var req McpRequest
 
 	if json.NewDecoder(r.Body).Decode(&req) != nil {
-		writeMCP(w, mcpResponse{ID: json.RawMessage("null"), Error: &mcpError{Code: -32700, Message: "parse error"}})
+		writeMCP(w, McpResponse{ID: json.RawMessage("null"), Error: &McpError{Code: -32700, Message: "parse error"}})
 
 		return
 	}
@@ -114,14 +111,14 @@ func (s *server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	writeMCP(w, s.mcpCall(req))
 }
 
-func writeMCP(w http.ResponseWriter, resp mcpResponse) {
+func writeMCP(w http.ResponseWriter, resp McpResponse) {
 	resp.JSONRPC = "2.0"
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (s *server) mcpCall(req mcpRequest) mcpResponse {
-	resp := mcpResponse{ID: req.ID}
+func (s *Server) mcpCall(req McpRequest) McpResponse {
+	resp := McpResponse{ID: req.ID}
 
 	switch req.Method {
 	case "initialize":
@@ -133,7 +130,7 @@ func (s *server) mcpCall(req mcpRequest) mcpResponse {
 	case "tools/call":
 		resp.Result, resp.Error = s.mcpToolCall(req.Params)
 	default:
-		resp.Error = &mcpError{Code: -32601, Message: "method not found: " + req.Method}
+		resp.Error = &McpError{Code: -32601, Message: "method not found: " + req.Method}
 	}
 
 	return resp
@@ -145,6 +142,7 @@ func mcpInitialize(params json.RawMessage) any {
 	}
 
 	json.Unmarshal(params, &p)
+
 	version := mcpVersions[0]
 
 	if slices.Contains(mcpVersions, p.ProtocolVersion) {
@@ -159,17 +157,18 @@ func mcpInitialize(params json.RawMessage) any {
 	}
 }
 
-func (s *server) mcpToolCall(params json.RawMessage) (any, *mcpError) {
+func (s *Server) mcpToolCall(params json.RawMessage) (any, *McpError) {
 	var p struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
 	}
 
 	json.Unmarshal(params, &p)
-	i := slices.IndexFunc(mcpTools, func(t mcpTool) bool { return t.Name == p.Name })
+
+	i := slices.IndexFunc(mcpTools, func(t McpTool) bool { return t.Name == p.Name })
 
 	if i < 0 {
-		return nil, &mcpError{Code: -32602, Message: "unknown tool: " + p.Name}
+		return nil, &McpError{Code: -32602, Message: "unknown tool: " + p.Name}
 	}
 
 	text, isError := "", false
@@ -186,13 +185,14 @@ func (s *server) mcpToolCall(params json.RawMessage) (any, *mcpError) {
 	}, nil
 }
 
-func (s *server) mcpSearch(args json.RawMessage) string {
+func (s *Server) mcpSearch(args json.RawMessage) string {
 	var a struct {
 		Query string `json:"query"`
 		Limit int    `json:"limit"`
 	}
 
 	throw(json.Unmarshal(args, &a))
+
 	q := strings.TrimSpace(a.Query)
 
 	if q == "" {
@@ -218,7 +218,7 @@ func (s *server) mcpSearch(args json.RawMessage) string {
 	return b.String()
 }
 
-func (s *server) mcpShow(args json.RawMessage) string {
+func (s *Server) mcpShow(args json.RawMessage) string {
 	var a struct {
 		Session string `json:"session"`
 		From    int    `json:"from"`
@@ -232,6 +232,7 @@ func (s *server) mcpShow(args json.RawMessage) string {
 	}
 
 	info, docs := s.session(a.Session, a.From, a.To)
+
 	var b strings.Builder
 	writeSession(&b, info, docs)
 

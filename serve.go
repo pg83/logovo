@@ -23,8 +23,8 @@ const (
 	maxLimit     = 200
 )
 
-type server struct {
-	store   objectStore
+type Server struct {
+	store   ObjectStore
 	dir     string
 	mu      sync.RWMutex
 	db      *sql.DB
@@ -39,9 +39,10 @@ func serveMain(args []string) {
 	local := fs.String("index", "", "serve this sqlite file instead of fetching from the store")
 	dir := fs.String("dir", "", "where fetched indexes are kept (default: a temp dir)")
 	refresh := fs.Duration("refresh", time.Minute, "how often to look for a new index")
+
 	throw(fs.Parse(args))
 
-	s := &server{dir: *dir}
+	s := &Server{dir: *dir}
 
 	if *local != "" {
 		s.open(*local, "local")
@@ -71,10 +72,12 @@ func serveMain(args []string) {
 	}
 
 	mux := http.NewServeMux()
+
 	mux.HandleFunc("GET /v1/search", s.handleSearch)
 	mux.HandleFunc("GET /v1/sessions/{id}", s.handleSession)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("POST /v1/mcp", s.handleMCP)
+
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok\n"))
 	})
@@ -83,8 +86,7 @@ func serveMain(args []string) {
 	throw(http.ListenAndServe(*listen, mux))
 }
 
-// refresh swaps in the index from the store when its version changed.
-func (s *server) refresh() {
+func (s *Server) refresh() {
 	version, ok := s.store.stat(indexKey)
 
 	if !ok {
@@ -100,18 +102,21 @@ func (s *server) refresh() {
 	}
 
 	body := s.store.open(indexKey)
+
 	defer body.Close()
 
 	dec := throw2(zstd.NewReader(body))
+
 	defer dec.Close()
 
 	path := filepath.Join(s.dir, "index-"+strconv.FormatInt(time.Now().UnixNano(), 36)+".sqlite")
 	f := throw2(os.Create(path))
+
 	defer f.Close()
 
-	// A failed refresh leaves nothing behind; the loaded index stays.
 	try(func() {
 		_, cerr := io.Copy(f, dec)
+
 		throw(f.Close())
 		throw(cerr)
 		s.open(path, version)
@@ -121,8 +126,9 @@ func (s *server) refresh() {
 	})
 }
 
-func (s *server) open(path, version string) {
+func (s *Server) open(path, version string) {
 	db := throw2(sql.Open("sqlite", "file:"+path+"?mode=ro&immutable=1"))
+
 	var docs string
 
 	try(func() {
@@ -133,7 +139,9 @@ func (s *server) open(path, version string) {
 	})
 
 	s.mu.Lock()
+
 	old, oldPath := s.db, s.path
+
 	s.db, s.path, s.version = db, path, version
 	s.mu.Unlock()
 
@@ -148,8 +156,9 @@ func (s *server) open(path, version string) {
 	slog.Info("serve: index loaded", "path", path, "version", version, "docs", docs)
 }
 
-func (s *server) current() *sql.DB {
+func (s *Server) current() *sql.DB {
 	s.mu.RLock()
+
 	defer s.mu.RUnlock()
 
 	if s.db == nil {
@@ -159,7 +168,7 @@ func (s *server) current() *sql.DB {
 	return s.db
 }
 
-type hit struct {
+type Hit struct {
 	Session string  `json:"session"`
 	N       int     `json:"n"`
 	Role    string  `json:"role"`
@@ -172,8 +181,6 @@ type hit struct {
 	Title   string  `json:"title"`
 }
 
-// quoteQuery turns free text into an FTS5 query of quoted words, the
-// fallback when the raw query is not valid FTS5 syntax.
 func quoteQuery(q string) string {
 	var parts []string
 
@@ -184,15 +191,9 @@ func quoteQuery(q string) string {
 	return strings.Join(parts, " ")
 }
 
-func (s *server) search(q string, limit int) []hit {
+func (s *Server) search(q string, limit int) []Hit {
 	db := s.current()
 
-	// The docs a fork copied from its parent are found in the parent; they
-	// are left out before the limit, so they do not crowd out other hits.
-	// A doc belongs to the last session that starts at or before its rowid
-	// (of two starting there, one has no docs, hence copied DESC), looked
-	// up by rowid alone: reading the doc's own session column for every
-	// match would cost more than the search itself.
 	const query = `
 SELECT h.session, h.n, h.role, h.ts, h.score, h.snip, s.agent, s.host, s.cwd, s.title
 FROM (
@@ -210,10 +211,11 @@ ORDER BY h.score`
 	}
 
 	defer rows.Close()
-	hits := []hit{}
+
+	hits := []Hit{}
 
 	for rows.Next() {
-		var h hit
+		var h Hit
 		throw(rows.Scan(&h.Session, &h.N, &h.Role, &h.TS, &h.Score, &h.Snippet, &h.Agent, &h.Host, &h.Cwd, &h.Title))
 		hits = append(hits, h)
 	}
@@ -231,14 +233,14 @@ func shortTS(ts string) string {
 	return ts
 }
 
-func (h hit) text() string {
+func (h Hit) text() string {
 	snippet := strings.NewReplacer("\x02", "[", "\x03", "]").Replace(h.Snippet)
 
 	return fmt.Sprintf("%s %s %s %s [%d] %s: %s\n    %s: %s\n",
 		h.Session, h.Agent, h.Host, shortTS(h.TS), h.N, h.Title, filepath.Base(h.Cwd), h.Role, oneLine(snippet))
 }
 
-func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	try(func() {
 		q := strings.TrimSpace(r.URL.Query().Get("q"))
 
@@ -275,10 +277,12 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) session(id string, from, to int) (sessionInfo, []doc) {
+func (s *Server) session(id string, from, to int) (SessionInfo, []Doc) {
 	db := s.current()
-	var info sessionInfo
+
+	var info SessionInfo
 	var first int64
+
 	err := db.QueryRow("SELECT session, agent, host, user, cwd, title, first_ts, last_ts, turns, bytes, parent, copied, parent_n, first_rowid FROM sessions WHERE session = ?", id).
 		Scan(&info.Session, &info.Agent, &info.Host, &info.User, &info.Cwd, &info.Title, &info.FirstTS, &info.LastTS, &info.Turns, &info.Bytes, &info.Parent, &info.Copied, &info.ParentN, &first)
 
@@ -289,26 +293,27 @@ func (s *server) session(id string, from, to int) (sessionInfo, []doc) {
 	throw(err)
 
 	forks := throw2(db.Query("SELECT session, copied FROM sessions WHERE parent = ? ORDER BY copied, session", id))
+
 	defer forks.Close()
-	info.Forks = []forkRef{}
+
+	info.Forks = []ForkRef{}
 
 	for forks.Next() {
-		var f forkRef
+		var f ForkRef
 		throw(forks.Scan(&f.Session, &f.Copied))
 		info.Forks = append(info.Forks, f)
 	}
 
 	throw(forks.Err())
 
-	// Doc n of a session has rowid first_rowid+n, the last one n=turns-1:
-	// the range never reads past the session, and the session filter keeps
-	// a from below 0 from reaching the one before.
 	rows := throw2(db.Query("SELECT n, role, ts, body FROM docs WHERE rowid BETWEEN ?1 + ?2 AND ?1 + min(?3, ?4 - 1) AND session = ?5 ORDER BY rowid", first, from, to, info.Turns, id))
+
 	defer rows.Close()
-	docs := []doc{}
+
+	docs := []Doc{}
 
 	for rows.Next() {
-		var d doc
+		var d Doc
 		throw(rows.Scan(&d.N, &d.Role, &d.TS, &d.Body))
 		docs = append(docs, d)
 	}
@@ -318,7 +323,7 @@ func (s *server) session(id string, from, to int) (sessionInfo, []doc) {
 	return info, docs
 }
 
-func writeSession(w io.Writer, info sessionInfo, docs []doc) {
+func writeSession(w io.Writer, info SessionInfo, docs []Doc) {
 	fmt.Fprintf(w, "# %s %s %s@%s %s\n# %s .. %s, %d turns\n# %s\n",
 		info.Session, info.Agent, info.User, info.Host, info.Cwd, shortTS(info.FirstTS), shortTS(info.LastTS), info.Turns, info.Title)
 
@@ -343,7 +348,7 @@ func writeSession(w io.Writer, info sessionInfo, docs []doc) {
 	}
 }
 
-func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	try(func() {
 		id := r.PathValue("id")
 
@@ -383,11 +388,13 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	try(func() {
 		db := s.current()
 		rows := throw2(db.Query("SELECT key, value FROM meta"))
+
 		defer rows.Close()
+
 		meta := map[string]string{}
 
 		for rows.Next() {

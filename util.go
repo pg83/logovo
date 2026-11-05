@@ -14,10 +14,12 @@ func itoa(n int64) string {
 
 func copyFile(src, dst string) {
 	in := throw2(os.Open(src))
+
 	defer in.Close()
 
 	out := throw2(os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644))
 	_, cerr := io.Copy(out, in)
+
 	throw(out.Close())
 	throw(cerr)
 }
@@ -30,7 +32,6 @@ func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
 }
 
-// truncate cuts s to at most n runes, marking the cut.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -45,7 +46,6 @@ func truncate(s string, n int) string {
 	return string(runes[:n]) + "…"
 }
 
-// oneLine squeezes whitespace so a record reads as a single line.
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }

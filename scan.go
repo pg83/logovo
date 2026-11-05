@@ -21,14 +21,22 @@ const (
 	maxPortionBytes   = 4 << 20
 )
 
-type scanRoot struct {
+type ScanRoot struct {
 	agent string
 	dir   string
 }
 
-type rootFlags []scanRoot
+type RootFlags []ScanRoot
 
-func (r *rootFlags) String() string {
+func (r *RootFlags) String() string {
+	return r.string()
+}
+
+func (r *RootFlags) Set(v string) error {
+	return r.set(v)
+}
+
+func (r *RootFlags) string() string {
 	var parts []string
 
 	for _, x := range *r {
@@ -38,34 +46,32 @@ func (r *rootFlags) String() string {
 	return strings.Join(parts, ",")
 }
 
-func (r *rootFlags) Set(v string) error {
+func (r *RootFlags) set(v string) error {
 	agent, dir, ok := strings.Cut(v, "=")
 
 	if !ok || !agents[agent] || dir == "" {
 		return errors.New("want -root claude=/dir or -root codex=/dir")
 	}
 
-	*r = append(*r, scanRoot{agent: agent, dir: dir})
+	*r = append(*r, ScanRoot{agent: agent, dir: dir})
 
 	return nil
 }
 
-// defaultRoots are where the agents keep their sessions; scan needs no
-// configuration on a host that runs them in the usual places.
-func defaultRoots() []scanRoot {
+func defaultRoots() []ScanRoot {
 	home := throw2(os.UserHomeDir())
 
-	return []scanRoot{
+	return []ScanRoot{
 		{agent: "claude", dir: filepath.Join(home, ".claude", "projects")},
 		{agent: "codex", dir: filepath.Join(home, ".codex", "sessions")},
 	}
 }
 
-type scanner struct {
+type Scanner struct {
 	url    string
 	host   string
 	user   string
-	roots  []scanRoot
+	roots  []ScanRoot
 	client *http.Client
 }
 
@@ -75,7 +81,8 @@ func scanMain(args []string) {
 	host := fs.String("host", "", "host name to report (default: this host's name)")
 	interval := fs.Duration("interval", time.Minute, "how often to look for new records")
 	once := fs.Bool("once", false, "one pass, then exit")
-	var roots rootFlags
+
+	var roots RootFlags
 	fs.Var(&roots, "root", "agent=dir to scan instead of the defaults; repeatable")
 	throw(fs.Parse(args))
 
@@ -93,7 +100,7 @@ func scanMain(args []string) {
 		me = u.Username
 	}
 
-	s := &scanner{
+	s := &Scanner{
 		url:    *url,
 		host:   *host,
 		user:   me,
@@ -112,9 +119,7 @@ func scanMain(args []string) {
 	}
 }
 
-// pass walks every root once. A file that fails to ship is left where it
-// is; the next pass retries it, .latest only moves after a 2xx.
-func (s *scanner) pass() {
+func (s *Scanner) pass() {
 	for _, root := range s.roots {
 		for _, path := range sessionFiles(root) {
 			try(func() {
@@ -126,9 +131,7 @@ func (s *scanner) pass() {
 	}
 }
 
-// sessionFiles lists the jsonl files whose name carries a session uuid:
-// <uuid>.jsonl for Claude, rollout-<stamp>-<uuid>.jsonl for Codex.
-func sessionFiles(root scanRoot) []string {
+func sessionFiles(root ScanRoot) []string {
 	var files []string
 
 	err := filepath.WalkDir(root.dir, func(p string, entry fs.DirEntry, err error) error {
@@ -137,8 +140,6 @@ func sessionFiles(root scanRoot) []string {
 		}
 
 		if entry.IsDir() {
-			// Claude keeps per-session scratch (tool results, subagents)
-			// in a directory named after the session; not session logs.
 			if p != root.dir && root.agent == "claude" && uuidRe.MatchString(entry.Name()) {
 				return filepath.SkipDir
 			}
@@ -204,11 +205,12 @@ func readLatest(path string) int64 {
 
 func writeLatest(path string, n int64) {
 	tmp := latestPath(path) + ".tmp"
+
 	throw(os.WriteFile(tmp, []byte(itoa(n)+"\n"), 0644))
 	throw(os.Rename(tmp, latestPath(path)))
 }
 
-func (s *scanner) ship(agent, path string) {
+func (s *Scanner) ship(agent, path string) {
 	info := throw2(os.Stat(path))
 	offset := readLatest(path)
 
@@ -222,9 +224,11 @@ func (s *scanner) ship(agent, path string) {
 	}
 
 	f := throw2(os.Open(path))
+
 	defer f.Close()
 
 	throw2(f.Seek(offset, io.SeekStart))
+
 	data := throw2(io.ReadAll(f))
 	cut := bytes.LastIndexByte(data, '\n')
 
@@ -271,8 +275,9 @@ func (s *scanner) ship(agent, path string) {
 	}
 }
 
-func (s *scanner) send(p *Portion) {
+func (s *Scanner) send(p *Portion) {
 	p.validate()
+
 	_, sum, frame := encodePortion(p)
 
 	if len(frame) > maxUploadBytes {
@@ -286,9 +291,12 @@ func (s *scanner) send(p *Portion) {
 	}
 
 	req := throw2(http.NewRequest(http.MethodPost, s.url, bytes.NewReader(frame)))
+
 	req.Header.Set("Content-Type", "application/zstd")
 	req.Header.Set("X-Logovo-Md5", sum)
+
 	resp := throw2(s.client.Do(req))
+
 	defer resp.Body.Close()
 
 	body := throw2(io.ReadAll(io.LimitReader(resp.Body, 4096)))

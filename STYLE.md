@@ -137,7 +137,7 @@ case` flags these, it does not invent names. Test functions stay
 
 The exception is forced by the standard library: methods it finds by name
 (`String`, `Error`, `MarshalJSON`, `UnmarshalJSON`, `Len`/`Less`/`Swap`,
-`Push`/`Pop`, `Unwrap`) stay upper-case — but only as one-line wrappers
+`Push`/`Pop`, `Unwrap`, `Read`, `Close`, `Set`) stay upper-case — but only as single-call wrappers
 delegating to the lower-case implementation (`func (v VFS) String() string {
 return v.string() }`). Internal code calls the lower-case twin; the wrapper
 exists solely so fmt/json/sort/heap/errors dispatch works.
@@ -155,8 +155,11 @@ JSON only. No YAML, ever.
 
 ## Lint
 
-`./lint.sh` is the style gate: it runs `ay dev refac lint` from the sibling
-`ay` checkout (style checks, the naming convention included), then `gofmt -w`.
+`./lint.sh` is the style gate: when the sibling `ay` checkout is available,
+it runs `ay dev refac lint` on the Go files, then checks `gofmt`, runs
+`go vet`, and builds the binary. Without that checkout, the format, vet,
+and build checks still run. Required `Read`, `Close`, and `Set` interface
+wrappers remain uppercase even if an older `ay` flags their names.
 Run it before committing style-sensitive changes.
 
 The gate strips every comment that is not a compiler directive. What a piece

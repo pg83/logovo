@@ -23,24 +23,24 @@ var errNotFound = errors.New("not found")
 
 const s3CallTimeout = 10 * time.Minute
 
-type objectStore interface {
+type ObjectStore interface {
 	put(key string, data []byte)
 	get(key string) []byte
 
 	open(key string) io.ReadCloser
 	putFile(key, path string)
-	list(prefix string) []object
+	list(prefix string) []Object
 	del(key string)
 
 	stat(key string) (string, bool)
 }
 
-type object struct {
+type Object struct {
 	key  string
 	size int64
 }
 
-func openStore(spec string) objectStore {
+func openStore(spec string) ObjectStore {
 	switch {
 	case strings.HasPrefix(spec, "dir:"):
 		return newDirStore(spec[len("dir:"):])
@@ -53,17 +53,17 @@ func openStore(spec string) objectStore {
 	return nil
 }
 
-type dirStore struct {
+type DirStore struct {
 	root string
 }
 
-func newDirStore(root string) *dirStore {
+func newDirStore(root string) *DirStore {
 	durableDirectory(root)
 
-	return &dirStore{root: root}
+	return &DirStore{root: root}
 }
 
-func (d *dirStore) path(key string) string {
+func (d *DirStore) path(key string) string {
 	if key == "" || strings.HasPrefix(key, "/") || strings.Contains(key, "..") {
 		throwFmt("store: bad key %q", key)
 	}
@@ -71,11 +71,11 @@ func (d *dirStore) path(key string) string {
 	return filepath.Join(d.root, filepath.FromSlash(key))
 }
 
-func (d *dirStore) put(key string, data []byte) {
+func (d *DirStore) put(key string, data []byte) {
 	d.writeObject(key, bytes.NewReader(data))
 }
 
-func (d *dirStore) writeObject(key string, src io.Reader) {
+func (d *DirStore) writeObject(key string, src io.Reader) {
 	p := d.path(key)
 	dir := filepath.Dir(p)
 
@@ -100,6 +100,7 @@ func syncParents(path string) {
 
 	for {
 		syncDirectory(path)
+
 		parent := filepath.Dir(path)
 
 		if parent == path {
@@ -145,7 +146,7 @@ func durableDirectory(path string) {
 	syncDirectory(parent)
 }
 
-func (d *dirStore) get(key string) []byte {
+func (d *DirStore) get(key string) []byte {
 	data, err := os.ReadFile(d.path(key))
 
 	if errors.Is(err, fs.ErrNotExist) {
@@ -157,7 +158,7 @@ func (d *dirStore) get(key string) []byte {
 	return data
 }
 
-func (d *dirStore) open(key string) io.ReadCloser {
+func (d *DirStore) open(key string) io.ReadCloser {
 	f, err := os.Open(d.path(key))
 
 	if errors.Is(err, fs.ErrNotExist) {
@@ -169,7 +170,7 @@ func (d *dirStore) open(key string) io.ReadCloser {
 	return f
 }
 
-func (d *dirStore) putFile(key, path string) {
+func (d *DirStore) putFile(key, path string) {
 	f := throw2(os.Open(path))
 
 	defer f.Close()
@@ -177,8 +178,8 @@ func (d *dirStore) putFile(key, path string) {
 	d.writeObject(key, f)
 }
 
-func (d *dirStore) list(prefix string) []object {
-	var objects []object
+func (d *DirStore) list(prefix string) []Object {
+	var objects []Object
 
 	err := filepath.WalkDir(d.root, func(p string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() || strings.HasSuffix(p, ".tmp") {
@@ -190,7 +191,7 @@ func (d *dirStore) list(prefix string) []object {
 		if strings.HasPrefix(key, prefix) {
 			info := throw2(entry.Info())
 
-			objects = append(objects, object{key: key, size: info.Size()})
+			objects = append(objects, Object{key: key, size: info.Size()})
 		}
 
 		return nil
@@ -202,7 +203,7 @@ func (d *dirStore) list(prefix string) []object {
 	return objects
 }
 
-func (d *dirStore) del(key string) {
+func (d *DirStore) del(key string) {
 	err := os.Remove(d.path(key))
 
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -214,7 +215,7 @@ func (d *dirStore) del(key string) {
 	}
 }
 
-func (d *dirStore) stat(key string) (string, bool) {
+func (d *DirStore) stat(key string) (string, bool) {
 	info, err := os.Stat(d.path(key))
 
 	if errors.Is(err, fs.ErrNotExist) {
@@ -226,7 +227,7 @@ func (d *dirStore) stat(key string) (string, bool) {
 	return info.ModTime().UTC().Format("20060102T150405.000000000") + "/" + itoa(info.Size()), true
 }
 
-type s3Store struct {
+type S3Store struct {
 	bucket string
 	cli    *s3.Client
 }
@@ -235,7 +236,7 @@ func s3ctx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), s3CallTimeout)
 }
 
-func newS3Store(bucket string) *s3Store {
+func newS3Store(bucket string) *S3Store {
 	key := os.Getenv("AWS_ACCESS_KEY_ID")
 	secret := os.Getenv("AWS_SECRET_ACCESS_KEY")
 	region := os.Getenv("AWS_REGION")
@@ -262,7 +263,7 @@ func newS3Store(bucket string) *s3Store {
 		o.UsePathStyle = true
 	})
 
-	return &s3Store{bucket: bucket, cli: cli}
+	return &S3Store{bucket: bucket, cli: cli}
 }
 
 func isS3NotFound(err error) bool {
@@ -289,7 +290,7 @@ func isS3NotFound(err error) bool {
 	return false
 }
 
-func (s *s3Store) put(key string, data []byte) {
+func (s *S3Store) put(key string, data []byte) {
 	ctx, cancel := s3ctx()
 
 	defer cancel()
@@ -301,7 +302,7 @@ func (s *s3Store) put(key string, data []byte) {
 	}))
 }
 
-func (s *s3Store) get(key string) []byte {
+func (s *S3Store) get(key string) []byte {
 	ctx, cancel := s3ctx()
 
 	defer cancel()
@@ -322,7 +323,7 @@ func (s *s3Store) get(key string) []byte {
 	return throw2(io.ReadAll(resp.Body))
 }
 
-type s3Body struct {
+type S3Body struct {
 	io.ReadCloser
 	cancel context.CancelCauseFunc
 }
@@ -331,7 +332,7 @@ func s3Timeout(cancel context.CancelCauseFunc) *time.Timer {
 	return time.AfterFunc(s3CallTimeout, func() { cancel(context.DeadlineExceeded) })
 }
 
-func (b *s3Body) read(p []byte) (int, error) {
+func (b *S3Body) read(p []byte) (int, error) {
 	t := s3Timeout(b.cancel)
 
 	defer t.Stop()
@@ -339,21 +340,21 @@ func (b *s3Body) read(p []byte) (int, error) {
 	return b.ReadCloser.Read(p)
 }
 
-func (b *s3Body) Read(p []byte) (int, error) {
+func (b *S3Body) Read(p []byte) (int, error) {
 	return b.read(p)
 }
 
-func (b *s3Body) close() error {
+func (b *S3Body) close() error {
 	defer b.cancel(nil)
 
 	return b.ReadCloser.Close()
 }
 
-func (b *s3Body) Close() error {
+func (b *S3Body) Close() error {
 	return b.close()
 }
 
-func (s *s3Store) open(key string) io.ReadCloser {
+func (s *S3Store) open(key string) io.ReadCloser {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	t := s3Timeout(cancel)
 
@@ -374,10 +375,10 @@ func (s *s3Store) open(key string) io.ReadCloser {
 
 	throw(err)
 
-	return &s3Body{ReadCloser: resp.Body, cancel: cancel}
+	return &S3Body{ReadCloser: resp.Body, cancel: cancel}
 }
 
-func (s *s3Store) putFile(key, path string) {
+func (s *S3Store) putFile(key, path string) {
 	f := throw2(os.Open(path))
 
 	defer f.Close()
@@ -393,12 +394,12 @@ func (s *s3Store) putFile(key, path string) {
 	}))
 }
 
-func (s *s3Store) list(prefix string) []object {
+func (s *S3Store) list(prefix string) []Object {
 	ctx, cancel := s3ctx()
 
 	defer cancel()
 
-	var objects []object
+	var objects []Object
 	var token *string
 
 	for {
@@ -409,7 +410,7 @@ func (s *s3Store) list(prefix string) []object {
 		}))
 
 		for _, obj := range page.Contents {
-			objects = append(objects, object{key: aws.ToString(obj.Key), size: aws.ToInt64(obj.Size)})
+			objects = append(objects, Object{key: aws.ToString(obj.Key), size: aws.ToInt64(obj.Size)})
 		}
 
 		if !aws.ToBool(page.IsTruncated) {
@@ -424,7 +425,7 @@ func (s *s3Store) list(prefix string) []object {
 	return objects
 }
 
-func (s *s3Store) del(key string) {
+func (s *S3Store) del(key string) {
 	ctx, cancel := s3ctx()
 
 	defer cancel()
@@ -435,7 +436,7 @@ func (s *s3Store) del(key string) {
 	}))
 }
 
-func (s *s3Store) stat(key string) (string, bool) {
+func (s *S3Store) stat(key string) (string, bool) {
 	ctx, cancel := s3ctx()
 
 	defer cancel()
