@@ -30,3 +30,7 @@ afterwards. The first merge converts old `pile/` and `sessions/` objects
 to `pile/*.sorted`; indexing refuses unmigrated objects. Keep the new
 archive workers in place: old merge binaries write the previous format.
 The new API requires a rebuilt index with the fork metadata columns.
+
+`scan` warns and skips a single record whose compressed portion exceeds
+the collector's 16 MiB limit, then continues shipping later records.
+The original record remains in the local session log.

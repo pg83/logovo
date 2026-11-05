@@ -275,6 +275,16 @@ func (s *scanner) send(p *Portion) {
 	p.validate()
 	_, sum, frame := encodePortion(p)
 
+	if len(frame) > maxUploadBytes {
+		if len(p.Records) != 1 {
+			throwFmt("scan: portion exceeds upload limit: %d bytes", len(frame))
+		}
+
+		slog.Warn("scan: oversized record skipped", "path", p.Path, "offset", p.Offset, "bytes", len(frame))
+
+		return
+	}
+
 	req := throw2(http.NewRequest(http.MethodPost, s.url, bytes.NewReader(frame)))
 	req.Header.Set("Content-Type", "application/zstd")
 	req.Header.Set("X-Logovo-Md5", sum)
