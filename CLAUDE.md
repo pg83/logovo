@@ -22,18 +22,25 @@ scan (every host)     POST https://logovo.lab.mesh/v1/portions
 web (every lab host)      /            the page
                           /v1/portions -> collect   queue/<uuid>.<md5>
                           /v1/*        -> serve
-merge (job, every minute)      queue/* repacked into one pile/<level>-<seq>, then pairs of
-                               same-size pile files repacked into the next size class
-index (job, every N minutes)   pile/* -> group lines by session -> normalize -> index/logovo.sqlite.zst
+merge (job, every minute)      queue/* (already in session order) repacked into one
+                               pile/<level>-<seq>.sorted, then pairs of same-size pile
+                               files merged by session into the next size class
+index (job, every N minutes)   pile/*.sorted merged by session, one session at a time
+                               -> normalize -> index/logovo.sqlite.zst
 serve (every lab host)         fetches the index when it changes; /v1/search, /v1/sessions/<uuid>
 search, show (CLI)             thin clients, default https://logovo.lab.mesh
 ```
 
 - A portion is one JSON line (`Portion` in `portion.go`) in one zstd frame.
-  The pile is the same lines, many sessions mixed, repacked into single
-  zstd streams whose sizes climb by powers of two (`merge.go`). merge is
-  not idempotent on purpose: a crash leaves duplicate portions, and the
-  indexer drops duplicates by md5 and orders by offset.
+  The pile is the same lines, many sessions in one file but grouped by
+  session in ascending order, repacked into single zstd streams whose
+  sizes climb by powers of two (`merge.go`). Because every pile file is
+  sorted, merge and index stream them and hold one session at a time,
+  never the whole history. Pile files from before sorting (no `.sorted`
+  suffix) and legacy `sessions/` objects are sent back to the queue by
+  merge and folded anew. merge is not idempotent on purpose: a crash
+  leaves duplicate portions, and the indexer drops duplicates by md5 and
+  orders by offset.
 - The store is `dir:/path` or `s3://bucket` (`store.go`); tests use `dir:`.
 - The index is SQLite with FTS5 through `modernc.org/sqlite` (pure Go, no
   cgo). One document per message: user text, assistant text, tool calls
