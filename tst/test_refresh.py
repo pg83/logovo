@@ -39,7 +39,7 @@ def test():
                 index.write_bytes(bad)
                 time.sleep(0.35)
                 assert serve.json('/v1/status')['version'] == version
-                assert len(list(cache.glob('index-*.sqlite'))) == 1
+                wait_for(lambda: len(list(cache.glob('index-*.sqlite'))) == 1)
                 assert lib.search(serve, 'needle')
             if baseline_fds is not None:
                 assert len(list(fd_root.iterdir())) <= baseline_fds + 2
