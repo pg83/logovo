@@ -26,6 +26,19 @@ type sessionInfo struct {
 	LastTS  string `json:"last_ts"`
 	Turns   int    `json:"turns"`
 	Bytes   int64  `json:"bytes"`
+
+	// A fork's first copied docs are the parent's, up to its doc parent_n;
+	// forks are the sessions forked from this one. The index and serve work
+	// them out across sessions, so normalize leaves them empty.
+	Parent  string    `json:"parent"`
+	Copied  int       `json:"copied"`
+	ParentN int       `json:"parent_n"`
+	Forks   []forkRef `json:"forks"`
+}
+
+type forkRef struct {
+	Session string `json:"session"`
+	Copied  int    `json:"copied"`
 }
 
 type normalized struct {

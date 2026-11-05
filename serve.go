@@ -182,11 +182,20 @@ func quoteQuery(q string) string {
 
 func (s *server) search(q string, limit int) []hit {
 	db := s.current()
+
+	// The docs a fork copied from its parent are found in the parent; they
+	// are left out before the limit, so they do not crowd out other hits.
+	// A doc belongs to the last session that starts at or before its rowid
+	// (of two starting there, one has no docs, hence copied DESC), looked
+	// up by rowid alone: reading the doc's own session column for every
+	// match would cost more than the search itself.
 	const query = `
 SELECT h.session, h.n, h.role, h.ts, h.score, h.snip, s.agent, s.host, s.cwd, s.title
 FROM (
     SELECT session, n, role, ts, bm25(docs) AS score, snippet(docs, 0, '[', ']', '…', 24) AS snip
-    FROM docs WHERE docs MATCH ? ORDER BY bm25(docs) LIMIT ?
+    FROM docs WHERE docs MATCH ?
+    AND docs.rowid >= (SELECT first_rowid + copied FROM sessions WHERE first_rowid <= docs.rowid ORDER BY first_rowid DESC, copied DESC LIMIT 1)
+    ORDER BY bm25(docs) LIMIT ?
 ) h JOIN sessions s ON s.session = h.session
 ORDER BY h.score`
 
@@ -264,14 +273,26 @@ func (s *server) session(id string, from, to int) (sessionInfo, []doc) {
 	db := s.current()
 	var info sessionInfo
 	var first int64
-	err := db.QueryRow("SELECT session, agent, host, user, cwd, title, first_ts, last_ts, turns, bytes, first_rowid FROM sessions WHERE session = ?", id).
-		Scan(&info.Session, &info.Agent, &info.Host, &info.User, &info.Cwd, &info.Title, &info.FirstTS, &info.LastTS, &info.Turns, &info.Bytes, &first)
+	err := db.QueryRow("SELECT session, agent, host, user, cwd, title, first_ts, last_ts, turns, bytes, parent, copied, parent_n, first_rowid FROM sessions WHERE session = ?", id).
+		Scan(&info.Session, &info.Agent, &info.Host, &info.User, &info.Cwd, &info.Title, &info.FirstTS, &info.LastTS, &info.Turns, &info.Bytes, &info.Parent, &info.Copied, &info.ParentN, &first)
 
 	if err == sql.ErrNoRows {
 		throwFmt("no such session %s", id)
 	}
 
 	throw(err)
+
+	forks := throw2(db.Query("SELECT session, copied FROM sessions WHERE parent = ? ORDER BY copied, session", id))
+	defer forks.Close()
+	info.Forks = []forkRef{}
+
+	for forks.Next() {
+		var f forkRef
+		throw(forks.Scan(&f.Session, &f.Copied))
+		info.Forks = append(info.Forks, f)
+	}
+
+	throw(forks.Err())
 
 	// Doc n of a session has rowid first_rowid+n, the last one n=turns-1:
 	// the range never reads past the session, and the session filter keeps
@@ -319,8 +340,24 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintf(w, "# %s %s %s@%s %s\n# %s .. %s, %d turns\n# %s\n\n",
+		fmt.Fprintf(w, "# %s %s %s@%s %s\n# %s .. %s, %d turns\n# %s\n",
 			info.Session, info.Agent, info.User, info.Host, info.Cwd, shortTS(info.FirstTS), shortTS(info.LastTS), info.Turns, info.Title)
+
+		if info.Parent != "" {
+			fmt.Fprintf(w, "# forked from %s after its turn %d; turns 0..%d are copies\n", info.Parent, info.ParentN, info.Copied-1)
+		}
+
+		if len(info.Forks) > 0 {
+			var forks []string
+
+			for _, f := range info.Forks {
+				forks = append(forks, fmt.Sprintf("%s (copies %d turns)", f.Session, f.Copied))
+			}
+
+			fmt.Fprintf(w, "# forks: %s\n", strings.Join(forks, ", "))
+		}
+
+		fmt.Fprintln(w)
 
 		for _, d := range docs {
 			fmt.Fprintf(w, "[%d] %s %s:\n%s\n\n", d.N, shortTS(d.TS), d.Role, d.Body)
