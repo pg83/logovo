@@ -104,16 +104,29 @@ func (s *server) refresh() {
 
 	path := filepath.Join(s.dir, "index-"+strconv.FormatInt(time.Now().UnixNano(), 36)+".sqlite")
 	f := throw2(os.Create(path))
-	_, cerr := io.Copy(f, dec)
-	throw(f.Close())
-	throw(cerr)
-	s.open(path, version)
+
+	// A failed refresh leaves nothing behind; the loaded index stays.
+	try(func() {
+		_, cerr := io.Copy(f, dec)
+		throw(f.Close())
+		throw(cerr)
+		s.open(path, version)
+	}).catch(func(exc *Exception) {
+		os.Remove(path)
+		exc.throw()
+	})
 }
 
 func (s *server) open(path, version string) {
 	db := throw2(sql.Open("sqlite", "file:"+path+"?mode=ro&immutable=1"))
 	var docs string
-	throw(db.QueryRow("SELECT value FROM meta WHERE key = 'docs'").Scan(&docs))
+
+	try(func() {
+		throw(db.QueryRow("SELECT value FROM meta WHERE key = 'docs'").Scan(&docs))
+	}).catch(func(exc *Exception) {
+		db.Close()
+		exc.throw()
+	})
 
 	s.mu.Lock()
 	old, oldPath := s.db, s.path
@@ -250,8 +263,9 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 func (s *server) session(id string, from, to int) (sessionInfo, []doc) {
 	db := s.current()
 	var info sessionInfo
-	err := db.QueryRow("SELECT session, agent, host, user, cwd, title, first_ts, last_ts, turns, bytes FROM sessions WHERE session = ?", id).
-		Scan(&info.Session, &info.Agent, &info.Host, &info.User, &info.Cwd, &info.Title, &info.FirstTS, &info.LastTS, &info.Turns, &info.Bytes)
+	var first int64
+	err := db.QueryRow("SELECT session, agent, host, user, cwd, title, first_ts, last_ts, turns, bytes, first_rowid FROM sessions WHERE session = ?", id).
+		Scan(&info.Session, &info.Agent, &info.Host, &info.User, &info.Cwd, &info.Title, &info.FirstTS, &info.LastTS, &info.Turns, &info.Bytes, &first)
 
 	if err == sql.ErrNoRows {
 		throwFmt("no such session %s", id)
@@ -259,7 +273,10 @@ func (s *server) session(id string, from, to int) (sessionInfo, []doc) {
 
 	throw(err)
 
-	rows := throw2(db.Query("SELECT n, role, ts, body FROM docs WHERE session = ? AND n BETWEEN ? AND ? ORDER BY n", id, from, to))
+	// Doc n of a session has rowid first_rowid+n, the last one n=turns-1:
+	// the range never reads past the session, and the session filter keeps
+	// a from below 0 from reaching the one before.
+	rows := throw2(db.Query("SELECT n, role, ts, body FROM docs WHERE rowid BETWEEN ?1 + ?2 AND ?1 + min(?3, ?4 - 1) AND session = ?5 ORDER BY rowid", first, from, to, info.Turns, id))
 	defer rows.Close()
 	docs := []doc{}
 

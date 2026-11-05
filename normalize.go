@@ -219,6 +219,33 @@ func parseClaude(n *normalized, records []string) {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
+		Attachment struct {
+			Type        string          `json:"type"`
+			Prompt      json.RawMessage `json:"prompt"`
+			CommandMode string          `json:"commandMode"`
+			Origin      struct {
+				Kind string `json:"kind"`
+			} `json:"origin"`
+		} `json:"attachment"`
+	}
+
+	// A message the user types while the agent works is written as a
+	// queued_command attachment; when the turn is interrupted it may be
+	// sent again as an ordinary user record before the agent answers,
+	// which must not count twice. Once the agent answers, the same text
+	// again is a new message.
+	queued := map[string]bool{}
+
+	requeued := func(text string) bool {
+		text = strings.TrimSpace(text)
+
+		if !queued[text] {
+			return false
+		}
+
+		delete(queued, text)
+
+		return true
 	}
 
 	for _, line := range records {
@@ -241,7 +268,24 @@ func parseClaude(n *normalized, records []string) {
 			if n.info.Title == "" && r.Summary != "" {
 				n.info.Title = truncate(oneLine(r.Summary), maxTitleChars)
 			}
+		case "attachment":
+			a := r.Attachment
+			// Before origin was recorded, the user's own messages were the
+			// ones in prompt mode.
+			human := a.Origin.Kind == "human" || a.Origin.Kind == "" && a.CommandMode == "prompt"
+
+			if a.Type != "queued_command" || !human {
+				continue
+			}
+
+			text := blockText(a.Prompt)
+			queued[strings.TrimSpace(text)] = true
+			n.add("user", r.Timestamp, text)
 		case "user", "assistant":
+			if r.Type == "assistant" {
+				clear(queued)
+			}
+
 			if r.IsMeta {
 				continue
 			}
@@ -249,7 +293,9 @@ func parseClaude(n *normalized, records []string) {
 			var s string
 
 			if json.Unmarshal(r.Message.Content, &s) == nil {
-				n.add(r.Message.Role, r.Timestamp, s)
+				if !requeued(s) {
+					n.add(r.Message.Role, r.Timestamp, s)
+				}
 
 				continue
 			}
@@ -273,7 +319,9 @@ func parseClaude(n *normalized, records []string) {
 				}
 			}
 
-			n.add(r.Message.Role, r.Timestamp, strings.Join(text, "\n"))
+			if body := strings.Join(text, "\n"); !requeued(body) {
+				n.add(r.Message.Role, r.Timestamp, body)
+			}
 
 			for _, t := range tools {
 				role := "assistant"

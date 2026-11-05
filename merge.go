@@ -85,8 +85,9 @@ func repack(store objectStore, fill func(w io.Writer)) (string, int64) {
 // eachSession reads pile files, each sorted by session, as one stream
 // and calls cb for every session in ascending order with all its lines:
 // the first file's, then the second's, and so on. Lines that are not
-// portions are skipped.
-func eachSession(store objectStore, keys []string, cb func(session string, lines [][]byte)) {
+// portions are skipped. A file that cannot be read to its end fails the
+// call when strict; otherwise it is logged and counts as ended there.
+func eachSession(store objectStore, keys []string, strict bool, cb func(session string, lines [][]byte)) {
 	readers := make([]*lineReader, len(keys))
 	heads := make([][]byte, len(keys))
 	sessions := make([]string, len(keys))
@@ -96,8 +97,22 @@ func eachSession(store objectStore, keys []string, cb func(session string, lines
 		defer readers[i].close()
 	}
 
+	read := func(i int) []byte {
+		if strict {
+			return readers[i].next()
+		}
+
+		var line []byte
+
+		try(func() { line = readers[i].next() }).catch(func(exc *Exception) {
+			slog.Error("pile file broken, read up to the break", "key", keys[i], "err", exc.Error())
+		})
+
+		return line
+	}
+
 	advance := func(i int) {
-		for line := readers[i].next(); line != nil; line = readers[i].next() {
+		for line := read(i); line != nil; line = read(i) {
 			session := portionSession(line)
 
 			if session == "" {
@@ -189,11 +204,27 @@ func merge(store objectStore) {
 	if len(inputs) > 0 {
 		key, size := repack(store, func(w io.Writer) {
 			for _, k := range inputs {
-				body := store.open(k)
-				dec := throw2(zstd.NewReader(body))
-				throw2(io.Copy(w, dec))
-				dec.Close()
-				body.Close()
+				// A queue object is one portion: it is decoded whole before
+				// any of it goes into the pile, and a broken one is kept in
+				// bad/ instead of stopping the fold for good.
+				raw := store.get(k)
+				var lines [][]byte
+				exc := try(func() { lines = decodeFrames(raw) })
+
+				if exc == nil && len(lines) == 0 {
+					exc = exceptionf("no lines")
+				}
+
+				if exc != nil {
+					slog.Error("merge: bad queue object, kept in bad/", "key", k, "err", exc.Error())
+					store.put("bad/"+k, raw)
+
+					continue
+				}
+
+				for _, line := range lines {
+					throw2(w.Write(line))
+				}
 			}
 		})
 
@@ -232,7 +263,7 @@ func merge(store objectStore) {
 		sort.Slice(files, func(i, j int) bool { return files[i].key < files[j].key })
 		pair := []string{files[0].key, files[1].key}
 		key, size := repack(store, func(w io.Writer) {
-			eachSession(store, pair, func(session string, lines [][]byte) {
+			eachSession(store, pair, true, func(session string, lines [][]byte) {
 				for _, line := range lines {
 					throw2(w.Write(line))
 				}
