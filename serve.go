@@ -196,7 +196,7 @@ func (s *server) search(q string, limit int) []hit {
 	const query = `
 SELECT h.session, h.n, h.role, h.ts, h.score, h.snip, s.agent, s.host, s.cwd, s.title
 FROM (
-    SELECT session, n, role, ts, bm25(docs) AS score, snippet(docs, 0, '[', ']', '…', 24) AS snip
+    SELECT session, n, role, ts, bm25(docs) AS score, snippet(docs, 0, char(2), char(3), '…', 24) AS snip
     FROM docs WHERE docs MATCH ?
     AND docs.rowid >= (SELECT first_rowid + copied FROM sessions WHERE first_rowid <= docs.rowid ORDER BY first_rowid DESC, copied DESC LIMIT 1)
     ORDER BY bm25(docs) LIMIT ?
@@ -232,8 +232,10 @@ func shortTS(ts string) string {
 }
 
 func (h hit) text() string {
+	snippet := strings.NewReplacer("\x02", "[", "\x03", "]").Replace(h.Snippet)
+
 	return fmt.Sprintf("%s %s %s %s [%d] %s: %s\n    %s: %s\n",
-		h.Session, h.Agent, h.Host, shortTS(h.TS), h.N, h.Title, filepath.Base(h.Cwd), h.Role, oneLine(h.Snippet))
+		h.Session, h.Agent, h.Host, shortTS(h.TS), h.N, h.Title, filepath.Base(h.Cwd), h.Role, oneLine(snippet))
 }
 
 func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {

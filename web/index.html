@@ -76,7 +76,7 @@ async function search(q) {
       <div class="hit" data-i="${i}">
         <div class="meta"><span>${h.agent}</span><span>${esc(h.host)}</span><span>${short(h.ts)}</span><span>${esc(base(h.cwd))}</span><span>#${h.n}</span></div>
         <div class="title">${esc(h.title)}</div>
-        <div class="snip">${esc(h.role)}: ${esc(h.snippet).replace(/\[([^\]]*)\]/g, '<mark>$1</mark>')}</div>
+        <div class="snip">${esc(h.role)}: ${esc(h.snippet).replace(/\x02([^\x03]*)\x03/g, '<mark>$1</mark>')}</div>
       </div>`).join('');
     document.querySelectorAll('.hit').forEach(el => el.onclick = () => {
       document.querySelectorAll('.hit.active').forEach(x => x.classList.remove('active'));

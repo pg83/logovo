@@ -76,7 +76,7 @@ def test():
 
             hits = lib.search(serve, "loki")
             assert hits and hits[0]["session"] == claude_id, hits
-            assert "[loki]" in hits[0]["snippet"], hits[0]
+            assert "\x02loki\x03" in hits[0]["snippet"], hits[0]
             assert hits[0]["agent"] == "claude" and hits[0]["host"] == "e2e", hits[0]
 
             # Thinking, encrypted reasoning and Codex's tagged context are not indexed.
